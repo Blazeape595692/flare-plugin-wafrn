@@ -1,0 +1,82 @@
+{
+  "$schema": "https://unpkg.com/flare-plugin-sdk@next/skill/flare-plugin/manifest.schema.json",
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "dev.flareplugins.wafrn",
+  "version": "0.1.0",
+  "name": "Wafrn",
+  "description": "Read and post on Wafrn, the Tumblr-inspired fediverse and Bluesky server",
+  "permissions": {
+    "mediaNetwork": true
+  },
+  "platform": {
+    "id": "Wafrn",
+    "name": "Wafrn",
+    "description": "Tumblr-inspired social network connected to the fediverse and Bluesky",
+    "detector": { "priority": 1000 },
+    "loginMethods": [
+      {
+        "id": "oauth",
+        "interaction": "OAuth",
+        "title": "Continue with Wafrn",
+        "description": "Authorize Flare in your browser"
+      }
+    ],
+    "capabilities": {
+      "flare.datasource.timeline/v1": {
+        "operations": { "page": { "directions": ["refresh", "older"] } }
+      },
+      "flare.datasource.profile/v1": {
+        "operations": {
+          "byId": {},
+          "byHandle": {},
+          "timeline": { "directions": ["refresh", "older"] }
+        }
+      },
+      "flare.datasource.post/v1": {
+        "operations": {
+          "detail": {},
+          "context": { "directions": ["refresh"] },
+          "mutate": {}
+        }
+      },
+      "flare.datasource.relation/v1": {
+        "operations": { "state": {}, "mutate": {} },
+        "relationActions": ["follow"]
+      },
+      "flare.datasource.notification/v1": {
+        "operations": {
+          "page": { "directions": ["refresh", "older"] },
+          "badge": {}
+        },
+        "notificationFilters": ["all", "mention", "like"]
+      },
+      "flare.datasource.compose/v1": {
+        "operations": { "publish": {} }
+      }
+    },
+    "timelines": [
+      { "id": "home", "title": "Dashboard", "icon": "Home", "defaultForNewAccount": true },
+      { "id": "local", "title": "Local", "icon": "Local" },
+      { "id": "explore", "title": "Explore", "icon": "World" }
+    ],
+    "profileTabs": [
+      { "id": "posts", "title": "Posts", "icon": "Profile" },
+      { "id": "media", "title": "Media", "icon": "Featured", "display": "Grid", "parameters": { "onlyMedia": "true" } }
+    ],
+    "composeDefaults": {
+      "text": { "maxLength": 65536 },
+      "media": {
+        "maxCount": 10,
+        "maxBytes": 104857600,
+        "supportedMimeTypes": ["image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "video/webm", "audio/mpeg"],
+        "altTextMaxLength": 1500,
+        "canSensitive": false
+      },
+      "visibility": { "allowed": ["public", "unlisted", "followers", "direct"], "default": "public" },
+      "contentWarning": true
+    },
+    "credentialSchemaVersion": 1,
+    "timelineSchemaVersion": 1
+  }
+}
