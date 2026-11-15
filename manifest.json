@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "apiVersion": 1,
   "id": "dev.flareplugins.wafrn",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "name": "Wafrn",
   "description": "Read and post on Wafrn, the Tumblr-inspired fediverse and Bluesky server",
   "permissions": {

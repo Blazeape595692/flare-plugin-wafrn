@@ -8,6 +8,11 @@
 // Not exposed because Wafrn's Mastodon API does not provide them yet: search,
 // deleting posts, bookmarks, block/mute, polls, follower/following lists.
 
+// Each request gets its own limit, shorter than Flare's 30 seconds for a whole call, so a
+// slow server fails that request (a normal error) instead of the call (a plugin crash).
+var REQUEST_TIMEOUT_MS = 12000;
+var SIDE_REQUEST_TIMEOUT_MS = 5000; // extras (reactions, quotes, read markers) that may be skipped
+
 var WAFRN_CAPABILITIES = {
   "flare.datasource.timeline/v1": ["page"],
   "flare.datasource.profile/v1": ["byId", "byHandle", "timeline"],
@@ -34,7 +39,7 @@ var NOTIFICATION_TYPES = {
   like: ["favourite", "pleroma:emoji_reaction"],
 };
 
-defineFlareSocialPlugin({
+defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
   detector: {
     async detect(request, context) {
       var origin = requireOrigin(request.origin || context.origin);
@@ -388,16 +393,46 @@ defineFlareSocialPlugin({
       },
     },
   },
-});
+}));
+
+// Flare treats any error that isn't made with flare.error() as a plugin crash, and pauses
+// the plugin after three in a minute. Every entry point therefore turns a stray error
+// (a failed request, unexpected data) into an ordinary error Flare shows as a message.
+function guardPlugin(name, definition) {
+  function wrap(value) {
+    if (typeof value === "function") {
+      return async function () {
+        try {
+          return await value.apply(this, arguments);
+        } catch (error) {
+          if (error && error.__flarePluginErrorV1 !== undefined) throw error;
+          var network = !!(error && typeof error.code === "string" && /^host\./.test(error.code));
+          throw flare.error({
+            code: network ? "Network" : "InvalidResponse",
+            message: { value: network ? "Could not reach " + name : name + " sent something this plugin couldn't read" },
+          });
+        }
+      };
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      var out = {};
+      Object.keys(value).forEach(function (key) { out[key] = wrap(value[key]); });
+      return out;
+    }
+    return value;
+  }
+  return wrap(definition);
+}
 
 async function markNotificationsRead(context, newestId) {
   try {
-    var current = (await authed(context, addQuery("/api/v1/markers", { "timeline[]": "notifications" }))).data;
+    var current = (await authed(context, addQuery("/api/v1/markers", { "timeline[]": "notifications" }), { timeoutMillis: SIDE_REQUEST_TIMEOUT_MS })).data;
     var last = current && current.notifications && current.notifications.last_read_id;
     if (last != null && Number(last) >= Number(newestId)) return; // never move the marker back
     await authed(context, "/api/v1/markers", {
       method: "POST",
       body: { type: "json", value: { notifications: { last_read_id: newestId } } },
+      timeoutMillis: SIDE_REQUEST_TIMEOUT_MS,
     });
   } catch (_) {
     // A failed marker update only leaves the badge as it was; still show the list.
@@ -436,17 +471,23 @@ async function enrichItems(items, context) {
   var cred = (await flare.credential.read()) || {};
   var jwt = typeof cred.jwt === "string" && cred.jwt ? cred.jwt : null;
   var me = decodeId(String(context.accountId || ""));
-  var quick = jwt ? await quickChips(context) : [];
-  // Wafrn can only react with this server's own custom emojis (looked up by :name:).
-  var local = {};
-  if (jwt) (await customEmojis(context)).forEach(function (e) { local[":" + e.shortcode + ":"] = true; });
+  // Fetch the emoji list and every post at once, each with a short limit, so a slow
+  // server only drops the extras instead of the whole timeline.
+  var emojis = jwt ? customEmojis(context) : Promise.resolve([]);
+  var side = { timeoutMillis: SIDE_REQUEST_TIMEOUT_MS };
+  if (jwt) side.token = jwt;
   var lookups = {};
   targets.forEach(function (t) {
     if (!lookups[t.uuid]) {
-      lookups[t.uuid] = apiRequest(context.origin, "/api/v3/post/" + t.uuid, jwt ? { token: jwt } : {})
+      lookups[t.uuid] = apiRequest(context.origin, "/api/v3/post/" + t.uuid, side)
         .then(function (r) { return r.data; }, function () { return null; });
     }
   });
+  var emojiList = await emojis;
+  var quick = jwt ? quickChips(context, emojiList) : [];
+  // Wafrn can only react with this server's own custom emojis (looked up by :name:).
+  var local = {};
+  emojiList.forEach(function (e) { local[":" + e.shortcode + ":"] = true; });
   await Promise.all(targets.map(async function (t) {
     var data = await lookups[t.uuid];
     if (!data || typeof data !== "object") return;
@@ -572,7 +613,7 @@ async function customEmojis(context) {
   if (cached && Date.now() - cached.at < EMOJI_CACHE_MS) return cached.list;
   var list = [];
   try {
-    list = asArray((await apiRequest(context.origin, "/api/v1/custom_emojis")).data)
+    list = asArray((await apiRequest(context.origin, "/api/v1/custom_emojis", { timeoutMillis: SIDE_REQUEST_TIMEOUT_MS })).data)
       .filter(function (e) { return e && e.shortcode && safeHttpsUrl(e.url, context.origin); });
   } catch (_) {
     list = cached ? cached.list : [];
@@ -581,9 +622,9 @@ async function customEmojis(context) {
   return list;
 }
 
-async function quickChips(context) {
+function quickChips(context, emojiList) {
   var chips = QUICK_UNICODE.map(function (e) { return { name: e, isUnicode: true }; });
-  (await customEmojis(context)).slice(0, QUICK_CUSTOM_COUNT).forEach(function (e) {
+  emojiList.slice(0, QUICK_CUSTOM_COUNT).forEach(function (e) {
     chips.push({ name: ":" + e.shortcode + ":", isUnicode: false, url: safeHttpsUrl(e.url, context.origin) });
   });
   return chips;
@@ -942,9 +983,10 @@ async function apiRequest(origin, path, options) {
   if (opts.timeoutMillis) request.timeoutMillis = opts.timeoutMillis;
   var response;
   try {
+    if (!request.timeoutMillis) request.timeoutMillis = REQUEST_TIMEOUT_MS;
     response = await flare.http.request(request);
   } catch (error) {
-    if (error && typeof error === "object" && error.code === "host.unavailable") {
+    if (!(error && error.__flarePluginErrorV1 !== undefined)) {
       fail("Network", "Could not reach the Wafrn server");
     }
     throw error;
