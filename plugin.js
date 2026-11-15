@@ -318,6 +318,11 @@ defineFlareSocialPlugin({
         });
         // Only quote notifications need the extra lookup (to show the quoted post).
         await enrichItems(quoteItems, context);
+        // Wafrn's unread badge counts notifications newer than the "notifications" marker.
+        // Flare has no "mark as read" hook, so opening the full list (newest page) marks it read.
+        if (page.direction === "refresh" && (!request.filterId || request.filterId === "all") && values[0] && values[0].id != null) {
+          await markNotificationsRead(context, String(values[0].id));
+        }
         var last = values[values.length - 1];
         if (!last || last.id == null) return { items: items, endReached: true };
         return { items: items, olderCursor: String(last.id), endReached: false };
@@ -384,6 +389,20 @@ defineFlareSocialPlugin({
     },
   },
 });
+
+async function markNotificationsRead(context, newestId) {
+  try {
+    var current = (await authed(context, addQuery("/api/v1/markers", { "timeline[]": "notifications" }))).data;
+    var last = current && current.notifications && current.notifications.last_read_id;
+    if (last != null && Number(last) >= Number(newestId)) return; // never move the marker back
+    await authed(context, "/api/v1/markers", {
+      method: "POST",
+      body: { type: "json", value: { notifications: { last_read_id: newestId } } },
+    });
+  } catch (_) {
+    // A failed marker update only leaves the badge as it was; still show the list.
+  }
+}
 
 // ------------------------------------------------------------------ paging
 
