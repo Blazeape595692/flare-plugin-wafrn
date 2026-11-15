@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "apiVersion": 1,
   "id": "dev.flareplugins.wafrn",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "name": "Wafrn",
   "description": "Read and post on Wafrn, the Tumblr-inspired fediverse and Bluesky server",
   "permissions": {
@@ -19,7 +19,18 @@
         "id": "oauth",
         "interaction": "OAuth",
         "title": "Continue with Wafrn",
-        "description": "Authorize Flare in your browser"
+        "description": "Authorize Flare in your browser. Emoji reactions need the email and password option instead."
+      },
+      {
+        "id": "password",
+        "interaction": "Password",
+        "title": "Sign in with email and password",
+        "description": "Enables emoji reactions. Your password is only used to sign in and is not stored.",
+        "fields": [
+          { "id": "email", "type": "Username", "label": "Email" },
+          { "id": "password", "type": "Password", "label": "Password" },
+          { "id": "code", "type": "Otp", "label": "Two-factor code (if enabled)", "required": false }
+        ]
       }
     ],
     "capabilities": {
@@ -56,9 +67,9 @@
       }
     },
     "timelines": [
-      { "id": "home", "title": "Dashboard", "icon": "Home", "defaultForNewAccount": true },
+      { "id": "home", "title": "Following", "icon": "Home", "defaultForNewAccount": true },
       { "id": "local", "title": "Local", "icon": "Local" },
-      { "id": "explore", "title": "Explore", "icon": "World" }
+      { "id": "explore", "title": "Wafrn & Friends", "icon": "World" }
     ],
     "profileTabs": [
       { "id": "posts", "title": "Posts", "icon": "Profile" },

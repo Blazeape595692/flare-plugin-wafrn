@@ -18,6 +18,16 @@ var WAFRN_CAPABILITIES = {
 };
 
 var OAUTH_SCOPES = "read write follow";
+var OOB_REDIRECT = "urn:ietf:wg:oauth:2.0:oob";
+
+// Emoji reactions use Wafrn's own API (/api/emojiReact, /api/v3/post), which needs
+// the session token from an email+password sign-in. Flare has no emoji picker for
+// plugins, so posts also show a few zero-count "quick" chips, and replying with only
+// an emoji or :shortcode: reacts instead of posting a reply.
+var QUICK_UNICODE = ["😂", "😮", "😢"];
+var QUICK_CUSTOM_COUNT = 2;
+var EMOJI_CACHE_MS = 10 * 60 * 1000;
+var emojiCache = {}; // origin -> { at, list }; disposable runtime cache
 
 var NOTIFICATION_TYPES = {
   mention: ["mention"],
@@ -121,6 +131,73 @@ defineFlareSocialPlugin({
         return { type: "success", value: value };
       },
     },
+
+    // Email + password sign-in: keeps Wafrn's session token for reactions and
+    // obtains a normal API token through the out-of-band OAuth flow.
+    password: {
+      async begin(request, context) {
+        var origin = requireOrigin(request.origin || context.origin);
+        var v = request.values || {};
+        var email = requiredString(v.email, "Enter your Wafrn email").trim();
+        var password = requiredString(v.password, "Enter your Wafrn password");
+        var code = String(v.code || "").replace(/\s+/g, "");
+        var instance = (await apiRequest(origin, "/api/v2/instance")).data;
+        if (!isWafrn(instance)) validationError("This server does not identify itself as Wafrn");
+
+        var login = (await apiRequest(origin, "/api/login", {
+          method: "POST",
+          body: { type: "json", value: { email: email, password: password } },
+        })).data || {};
+        if (login.success !== true || !login.token) {
+          validationError(typeof login.message === "string" && login.message ? login.message : "Wafrn rejected the email or password");
+        }
+        var jwt = String(login.token);
+        if (login.mfaRequired) {
+          if (!code) validationError("This account uses two-factor authentication; enter your current code");
+          var mfa = (await apiRequest(origin, "/api/login/mfa", {
+            method: "POST",
+            token: jwt,
+            body: { type: "json", value: { token: code } },
+          })).data || {};
+          if (mfa.success !== true || !mfa.token) validationError("Wafrn rejected the two-factor code");
+          jwt = String(mfa.token);
+        }
+
+        var app = (await apiRequest(origin, "/api/v1/apps", {
+          method: "POST",
+          body: { type: "form", values: { client_name: "Flare", redirect_uris: OOB_REDIRECT, scopes: OAUTH_SCOPES, website: "https://github.com/flaresocialapp/Flare" } },
+        })).data;
+        if (!app || !app.client_id || !app.client_secret) invalidResponse("Wafrn did not return OAuth client credentials");
+        var grant = (await apiRequest(origin, "/api/v1/oauth/authorize", {
+          method: "POST",
+          token: jwt,
+          body: { type: "json", value: { client_id: String(app.client_id), redirect_uri: OOB_REDIRECT, scope: OAUTH_SCOPES } },
+        })).data || {};
+        if (grant.success !== true || !grant.code) invalidResponse("Wafrn did not authorize Flare");
+        var token = (await apiRequest(origin, "/oauth/token", {
+          method: "POST",
+          body: { type: "form", values: {
+            grant_type: "authorization_code", code: String(grant.code),
+            client_id: String(app.client_id), client_secret: String(app.client_secret), redirect_uri: OOB_REDIRECT,
+          } },
+        })).data;
+        if (!token || !token.access_token) invalidResponse("Wafrn did not return an access token");
+        var accessToken = String(token.access_token);
+        var account = (await apiRequest(origin, "/api/v1/accounts/verify_credentials", { token: accessToken })).data;
+        var profile = mapProfile(account, origin);
+        return {
+          type: "success",
+          value: {
+            accountId: profile.key.id,
+            origin: origin,
+            credential: { accessToken: accessToken, jwt: jwt },
+            profile: profile,
+            capabilities: WAFRN_CAPABILITIES,
+            composeConfig: composeConfig(instance),
+          },
+        };
+      },
+    },
   },
 
   capabilities: {
@@ -165,6 +242,7 @@ defineFlareSocialPlugin({
       async detail(request, context) {
         var status = (await authed(context, "/api/v1/statuses/" + encodeURIComponent(request.key.id))).data;
         var item = mapTimelineItem(status, context);
+        await enrichItems([item], context);
         return item.presentation ? { post: item.post, presentation: item.presentation } : { post: item.post };
       },
       async context(request, context) {
@@ -175,12 +253,16 @@ defineFlareSocialPlugin({
         asArray(thread.ancestors).forEach(function (s) { values.push(s); });
         values.push(detail);
         asArray(thread.descendants).forEach(function (s) { values.push(s); });
-        return {
-          items: values.filter(Boolean).slice(0, 200).map(function (s) { return mapTimelineItem(s, context); }),
-          endReached: true,
-        };
+        var items = values.filter(Boolean).slice(0, 200).map(function (s) { return mapTimelineItem(s, context); });
+        await enrichItems(items, context);
+        return { items: items, endReached: true };
       },
       async mutate(request, context) {
+        if (request.action === "React" || request.action === "Unreact") {
+          var reaction = String((request.parameters && request.parameters.reaction) || "");
+          await sendReaction(context, request.key.id, reaction, request.action === "Unreact");
+          return { type: "updatedPost", post: await refreshedPost(context, request.key.id) };
+        }
         var suffix = {
           Favourite: "favourite",
           Unfavourite: "unfavourite",
@@ -195,7 +277,10 @@ defineFlareSocialPlugin({
         if (!status || String(status.id) !== request.key.id || status.reblog) {
           status = (await authed(context, path)).data;
         }
-        return { type: "updatedPost", post: mapPost(status, context) };
+        // An updated post replaces the cached one completely, so include its reactions.
+        var updated = { type: "post", post: mapPost(status, context) };
+        await enrichItems([updated], context);
+        return { type: "updatedPost", post: updated.post };
       },
     },
 
@@ -225,10 +310,14 @@ defineFlareSocialPlugin({
         if (page.direction !== "refresh" && page.cursor) query.max_id = page.cursor;
         var values = asArray((await authed(context, addQuery("/api/v1/notifications", query))).data);
         var items = [];
+        var quoteItems = [];
         values.forEach(function (n) {
           var item = mapNotification(n, context);
           if (item) items.push(item);
+          if (item && item.type === "post" && n.type === "wafrn:quote") quoteItems.push(item);
         });
+        // Only quote notifications need the extra lookup (to show the quoted post).
+        await enrichItems(quoteItems, context);
         var last = values[values.length - 1];
         if (!last || last.id == null) return { items: items, endReached: true };
         return { items: items, olderCursor: String(last.id), endReached: false };
@@ -241,6 +330,13 @@ defineFlareSocialPlugin({
 
     compose: {
       async publish(request, context) {
+        // Replying with only one emoji or :shortcode: reacts instead (Flare has no emoji picker).
+        var reactWith = request.replyTo && !(request.assets || []).length && !request.spoilerText
+          ? await reactionFromText(context, request.text) : null;
+        if (reactWith) {
+          await sendReaction(context, request.replyTo.id, reactWith, false);
+          return { post: await refreshedPost(context, request.replyTo.id) };
+        }
         var mediaIds = [];
         var assets = request.assets || [];
         for (var i = 0; i < assets.length; i++) {
@@ -281,7 +377,9 @@ defineFlareSocialPlugin({
           // Wafrn queued the post instead of publishing it immediately.
           validationError("Wafrn queued the post; it will appear once published");
         }
-        return { post: mapPost(response.data, context) };
+        var created = { type: "post", post: mapPost(response.data, context) };
+        await enrichItems([created], context);
+        return { post: created.post };
       },
     },
   },
@@ -294,10 +392,281 @@ async function statusPage(context, path, page, params) {
   if (page.direction !== "refresh" && page.cursor) query.max_id = page.cursor;
   var values = asArray((await authed(context, addQuery(path, query))).data);
   var items = values.filter(Boolean).map(function (s) { return mapTimelineItem(s, context); });
+  await enrichItems(items, context);
   var last = values[values.length - 1];
   // Wafrn's Link header may report http:// behind proxies, so page by the last ID.
   if (!last || last.id == null) return { items: items, endReached: true };
   return { items: items, olderCursor: String(last.id), endReached: false };
+}
+
+// ------------------------------------------------- reactions and quotes
+//
+// Wafrn's Mastodon-style API has no reactions or quotes, so each shown post is
+// looked up once in Wafrn's own API (/api/v3/post/:uuid), in parallel. A failed
+// lookup only leaves that post without reactions/quotes.
+
+async function enrichItems(items, context) {
+  var targets = [];
+  items.forEach(function (item) {
+    if (!item || item.type !== "post") return;
+    var post = item.presentation && item.presentation.repost ? item.presentation.repost : item.post;
+    var uuid = decodeId(post.key.id);
+    if (uuid) targets.push({ item: item, post: post, uuid: uuid });
+  });
+  if (!targets.length) return;
+  var cred = (await flare.credential.read()) || {};
+  var jwt = typeof cred.jwt === "string" && cred.jwt ? cred.jwt : null;
+  var me = decodeId(String(context.accountId || ""));
+  var quick = jwt ? await quickChips(context) : [];
+  // Wafrn can only react with this server's own custom emojis (looked up by :name:).
+  var local = {};
+  if (jwt) (await customEmojis(context)).forEach(function (e) { local[":" + e.shortcode + ":"] = true; });
+  var lookups = {};
+  targets.forEach(function (t) {
+    if (!lookups[t.uuid]) {
+      lookups[t.uuid] = apiRequest(context.origin, "/api/v3/post/" + t.uuid, jwt ? { token: jwt } : {})
+        .then(function (r) { return r.data; }, function () { return null; });
+    }
+  });
+  await Promise.all(targets.map(async function (t) {
+    var data = await lookups[t.uuid];
+    if (!data || typeof data !== "object") return;
+    var reactions = buildReactions(data, t.uuid, me, !!jwt, quick, context.origin, local);
+    if (reactions.length) t.post.emojiReactions = reactions;
+    var quotes = quotedPosts(data, t.uuid, context);
+    if (quotes.length) {
+      t.item.presentation = t.item.presentation || {};
+      t.item.presentation.quotes = quotes;
+    }
+  }));
+}
+
+function buildReactions(data, uuid, me, canReact, quick, origin, local) {
+  var relations = data.emojiRelations || {};
+  var emojis = {};
+  asArray(relations.emojis).forEach(function (e) { if (e && e.id) emojis[e.id] = e; });
+  var rows = asArray(relations.postEmojiReactions).filter(function (r) { return r && r.postId === uuid; });
+  var counts = asArray(data.emojiReactionCounts).filter(function (c) { return c && c.postId === uuid && c.content; });
+  if (!counts.length) {
+    // Older servers send every reaction instead of per-emoji counts.
+    var tally = {};
+    rows.forEach(function (r) { tally[r.content] = (tally[r.content] || 0) + 1; });
+    counts = Object.keys(tally).map(function (k) { return { content: k, count: tally[k] }; });
+  }
+  var out = [];
+  var seen = {};
+  counts.sort(function (a, b) { return Number(b.count) - Number(a.count); }).forEach(function (c) {
+    var name = String(c.content);
+    if (seen[name] || name.length > 512) return;
+    var row = rows.filter(function (r) { return r.content === name; })[0];
+    var custom = /^:[^:\s]+:$/.test(name);
+    var mine = !!me && rows.some(function (r) { return r.content === name && r.userId === me; });
+    // Other servers' emojis can be shown but not added (removing your own still works).
+    var chip = { name: name, count: count(c.count), isUnicode: !custom, me: mine,
+      enabled: canReact && (!custom || !!(local && local[name]) || mine) };
+    if (custom) {
+      var emoji = row && emojis[row.emojiId];
+      var url = emoji && emoji.uuid ? emojiImageUrl(origin, emoji.uuid) : emoji && safeHttpsUrl(emoji.url, null);
+      if (!url) return; // Flare needs an image for custom emoji
+      chip.url = url;
+    }
+    seen[name] = true;
+    out.push(chip);
+  });
+  quick.forEach(function (q) {
+    if (!seen[q.name] && out.length < 100) {
+      seen[q.name] = true;
+      out.push(Object.assign({ count: 0, me: false, enabled: true }, q));
+    }
+  });
+  return out.slice(0, 100);
+}
+
+function quotedPosts(data, uuid, context) {
+  var byId = {};
+  asArray(data.quotedPosts).forEach(function (p) { if (p && p.id) byId[p.id] = p; });
+  var out = [];
+  asArray(data.quotes).forEach(function (q) {
+    var quoted = q && q.quoterPostId === uuid ? byId[q.quotedPostId] : null;
+    if (quoted && out.length < 100) {
+      var mapped = mapNativePost(quoted, data, context);
+      if (mapped) out.push(mapped);
+    }
+  });
+  return out;
+}
+
+/** Maps a post from Wafrn's own API to PostV1, keyed like the Mastodon API so it opens normally. */
+function mapNativePost(p, data, context) {
+  var origin = context.origin;
+  var key = encodeId(String(p.id), p.createdAt);
+  if (!key) return null;
+  var post = {
+    key: { id: key, host: originHost(origin) },
+    createdAt: isoDate(p.createdAt),
+    content: { format: "html", value: String(p.content || "") },
+    media: asArray(data.medias).filter(function (m) { return m && m.postId === p.id; }).map(function (m) {
+      var type = String(m.mediaType || "");
+      var kind = type.indexOf("video/") === 0 ? "video" : type.indexOf("audio/") === 0 ? "audio" : type === "image/gif" ? "gif" : type.indexOf("image/") === 0 || !type ? "image" : null;
+      if (!kind || !m.id) return null;
+      var media = { id: String(m.id), type: kind, url: requireOrigin(origin) + "/api/v2/cache/media/" + encodeURIComponent(m.id) };
+      if (m.description) media.description = String(m.description);
+      if (positive(m.width)) media.width = Math.round(m.width);
+      if (positive(m.height)) media.height = Math.round(m.height);
+      return media;
+    }).filter(Boolean).slice(0, 100),
+    url: requireOrigin(origin) + "/fediverse/post/" + encodeURIComponent(p.id),
+  };
+  var user = asArray(data.users).filter(function (u) { return u && u.id === p.userId; })[0];
+  if (user && user.url) post.author = mapNativeUser(user, origin);
+  if (p.content_warning) {
+    post.spoilerText = String(p.content_warning);
+    post.sensitive = true;
+  }
+  return post;
+}
+
+function mapNativeUser(u, origin) {
+  var host = originHost(origin);
+  var url = String(u.url);
+  var remote = url.charAt(0) === "@";
+  var acct = remote ? url.slice(1) : url;
+  var profile = {
+    // Wafrn's Mastodon API also accepts raw user IDs, so the profile still opens.
+    key: { id: String(u.id), host: host },
+    handle: "@" + (acct.indexOf("@") >= 0 ? acct : acct + "@" + host),
+    displayName: String(u.name || acct),
+    avatarUrl: requireOrigin(origin) + "/api/v2/cache/avatar/" + encodeURIComponent(u.id),
+    bot: u.isBot === true,
+  };
+  var link = safeHttpsUrl(u.remoteId, null);
+  if (link) profile.url = link;
+  return profile;
+}
+
+function emojiImageUrl(origin, uuid) {
+  return requireOrigin(origin) + "/api/v2/cache/emoji/" + encodeURIComponent(uuid) + "?format=webp&size=small";
+}
+
+async function customEmojis(context) {
+  var cached = emojiCache[context.origin];
+  if (cached && Date.now() - cached.at < EMOJI_CACHE_MS) return cached.list;
+  var list = [];
+  try {
+    list = asArray((await apiRequest(context.origin, "/api/v1/custom_emojis")).data)
+      .filter(function (e) { return e && e.shortcode && safeHttpsUrl(e.url, context.origin); });
+  } catch (_) {
+    list = cached ? cached.list : [];
+  }
+  emojiCache[context.origin] = { at: Date.now(), list: list };
+  return list;
+}
+
+async function quickChips(context) {
+  var chips = QUICK_UNICODE.map(function (e) { return { name: e, isUnicode: true }; });
+  (await customEmojis(context)).slice(0, QUICK_CUSTOM_COUNT).forEach(function (e) {
+    chips.push({ name: ":" + e.shortcode + ":", isUnicode: false, url: safeHttpsUrl(e.url, context.origin) });
+  });
+  return chips;
+}
+
+async function sendReaction(context, postKey, emojiName, undo) {
+  var cred = (await flare.credential.read()) || {};
+  if (!cred.jwt) unsupportedError("Reactions need the \"Sign in with email and password\" option; add the account again that way");
+  var uuid = decodeId(postKey);
+  if (!uuid) notFound("Unknown Wafrn post");
+  if (!emojiName || emojiName.length > 512) validationError("Invalid reaction");
+  var result = (await apiRequest(context.origin, "/api/emojiReact", {
+    method: "POST",
+    token: String(cred.jwt),
+    body: { type: "json", value: { postId: uuid, emojiName: emojiName, undo: undo } },
+  })).data || {};
+  if (result.success !== true && !undo) validationError(remoteMessage(result, "Wafrn didn't accept this reaction"));
+}
+
+async function refreshedPost(context, postKey) {
+  var status = (await authed(context, "/api/v1/statuses/" + encodeURIComponent(postKey))).data;
+  var item = { type: "post", post: mapPost(status, context) };
+  await enrichItems([item], context);
+  return item.post;
+}
+
+/** Returns the reaction to send when a reply is only one emoji or one known :shortcode:. */
+async function reactionFromText(context, text) {
+  var value = String(text || "").trim();
+  if (!value || value.length > 64) return null;
+  var cred = (await flare.credential.read()) || {};
+  if (!cred.jwt) return null;
+  var shortcode = value.match(/^:([A-Za-z0-9_+-]+):$/);
+  if (shortcode) {
+    var known = (await customEmojis(context)).some(function (e) { return e.shortcode === shortcode[1]; });
+    return known ? value : null;
+  }
+  var single;
+  try {
+    single = new RegExp("^(?:\\p{Regional_Indicator}{2}|\\p{Extended_Pictographic}[\\uFE0F\\p{Emoji_Modifier}]*(?:\\u200D\\p{Extended_Pictographic}[\\uFE0F\\p{Emoji_Modifier}]*)*|[0-9#*]\\uFE0F?\\u20E3)$", "u");
+  } catch (_) {
+    return null; // engine without Unicode property escapes: keep it a normal reply
+  }
+  return single.test(value) ? value : null;
+}
+
+// Wafrn's Mastodon API IDs are a 13-digit millisecond timestamp followed by the post
+// UUID as a 39-digit decimal number. These convert without relying on BigInt.
+
+function decodeId(id) {
+  var s = String(id || "");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return s.toLowerCase();
+  var hex = null;
+  if (/^[0-9]{13}[0-9a-f]{32}$/i.test(s) && /[a-f]/i.test(s.slice(13))) hex = s.slice(13).toLowerCase();
+  else if (/^[0-9]{52}$/.test(s)) hex = decimalToHex(s.slice(13));
+  else if (/^[0-9]{13}[0-9a-f]{32}$/i.test(s)) hex = s.slice(13).toLowerCase();
+  if (!hex || hex.length > 32) return null;
+  while (hex.length < 32) hex = "0" + hex;
+  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+}
+
+function encodeId(uuid, createdAt) {
+  var hex = String(uuid).replace(/-/g, "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(hex)) return null;
+  var ms = Date.parse(String(createdAt || ""));
+  var stamp = String(Math.max(0, isNaN(ms) ? 0 : ms));
+  while (stamp.length < 13) stamp = "0" + stamp;
+  var dec = hexToDecimal(hex);
+  while (dec.length < 39) dec = "0" + dec;
+  return stamp + dec;
+}
+
+function decimalToHex(dec) {
+  var digits = dec.replace(/^0+/, "").split("").map(Number);
+  var out = "";
+  while (digits.length) {
+    var rest = [];
+    var carry = 0;
+    for (var i = 0; i < digits.length; i++) {
+      var cur = carry * 10 + digits[i];
+      var q = Math.floor(cur / 16);
+      carry = cur % 16;
+      if (rest.length || q) rest.push(q);
+    }
+    out = carry.toString(16) + out;
+    digits = rest;
+  }
+  return out || "0";
+}
+
+function hexToDecimal(hex) {
+  var digits = [0]; // little-endian base 10
+  for (var i = 0; i < hex.length; i++) {
+    var carry = parseInt(hex.charAt(i), 16);
+    for (var j = 0; j < digits.length; j++) {
+      var v = digits[j] * 16 + carry;
+      digits[j] = v % 10;
+      carry = Math.floor(v / 10);
+    }
+    while (carry) { digits.push(carry % 10); carry = Math.floor(carry / 10); }
+  }
+  return digits.reverse().join("").replace(/^0+(?=.)/, "");
 }
 
 // ----------------------------------------------------------------- mapping

@@ -7,24 +7,41 @@ the Tumblr-inspired social network that federates with the fediverse and Bluesky
 
 | Feature | Notes |
 | --- | --- |
-| Sign in | In-browser OAuth. Flare never sees your password. Works with any Wafrn server. |
-| Timelines | Dashboard (default), Local, Explore |
+| Sign in | Email and password (needed for emoji reactions), or in-browser authorization. Works with any Wafrn server. |
+| Timelines | Following (default), Local, Wafrn & Friends |
 | Posts | Detail view, full thread, like/unlike, reblog/unreblog, link cards, hashtags |
+| Quote posts | The quoted post is shown inside the quoting post, including in quote notifications |
+| Emoji reactions | Reactions with counts and your server's custom emojis. Tap one to add or remove yours. |
 | Profiles | Profile pages with Posts and Media tabs, follow/unfollow |
 | Notifications | All / Mentions / Likes filters, unread badge. Covers likes, reblogs, follows, emoji reactions, quotes, asks and bites. |
 | Compose | Text, images/video/audio with alt text, content warnings, visibility, replies |
 | Server detection | Typing a Wafrn server address picks this plugin automatically |
 
-The plugin uses Wafrn's Mastodon-compatible API (`/api/v1`). That API doesn't offer
-search, deleting posts, bookmarks, block/mute, polls or follower lists yet, so those
-features aren't shown.
+Not available yet, because Wafrn's API for apps doesn't offer them: search, deleting
+posts, bookmarks, block/mute, polls and follower lists.
+
+## Emoji reactions
+
+Flare has no emoji picker for plugins, so:
+
+- Every post shows its reactions plus a few quick ones (😂 😮 😢 and two of your
+  server's custom emojis). Tap any of them to react; tap again to remove it.
+- To react with any other emoji, **reply with only that emoji** (e.g. `🎉`) or only a
+  custom emoji code (e.g. `:blobcat:`). That adds a reaction instead of posting a reply.
+  Anything longer is a normal reply.
+- Custom emojis from other servers are shown but can't be added from Flare, because
+  Wafrn only accepts your own server's emojis there.
+- Reactions need the **Sign in with email and password** option. With browser sign-in
+  you see reactions but can't add any. Your password is only used to sign in and isn't
+  stored.
 
 ## Sign in
 
 1. In Flare, add an account and type your Wafrn server's full address, e.g.
    `app.wafrn.net`. Wafrn won't appear in the suggested server boxes, and partial text
    won't find it; Flare only lists built-in platforms there.
-2. Choose **Continue with Wafrn**, sign in on the page that opens and approve Flare.
+2. Choose **Sign in with email and password** (add your two-factor code if you use one),
+   or **Continue with Wafrn** to sign in on the page that opens instead.
 
 ## Install
 
