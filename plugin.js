@@ -16,7 +16,7 @@ var SIDE_REQUEST_TIMEOUT_MS = 5000; // extras (reactions, quotes, read markers) 
 var WAFRN_CAPABILITIES = {
   "flare.datasource.timeline/v1": ["page"],
   "flare.datasource.profile/v1": ["byId", "byHandle", "timeline"],
-  "flare.datasource.post/v1": ["detail", "context", "mutate"],
+  "flare.datasource.post/v1": ["detail", "context", "mutate", "delete"],
   "flare.datasource.relation/v1": ["state", "mutate"],
   "flare.datasource.notification/v1": ["page", "badge"],
   "flare.datasource.compose/v1": ["publish"],
@@ -237,8 +237,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
         if (request.tabId === "emotes") {
           // Flare shows profile tabs on every profile; the list belongs on your own.
           if (String(request.profile.id) === String(context.accountId)) return emojiPage(context, request.page);
-          return { items: [noteItem(context, "emotes-elsewhere",
-            "Your server's custom emotes are listed in the Emotes tab of your own profile (Me).")], endReached: true };
+          return { items: [], endReached: true };
         }
         var params = {};
         if (request.tabId === "media" || (request.parameters && request.parameters.onlyMedia === "true")) {
@@ -274,7 +273,15 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
         await enrichItems(items, context);
         return { items: items, endReached: true };
       },
+      async delete(request, context) {
+        await deletePost(context, request.key.id);
+        return { type: "deleted" };
+      },
       async mutate(request, context) {
+        if (request.action === "Delete") {
+          await deletePost(context, request.key.id);
+          return { type: "deleted" };
+        }
         if (request.action === "React" || request.action === "Unreact") {
           var reaction = String((request.parameters && request.parameters.reaction) || "");
           await sendReaction(context, request.key.id, reaction, request.action === "Unreact");
@@ -755,8 +762,8 @@ async function emojiList(context, fresh) {
   return emojiTabCache[context.origin];
 }
 
-// Flare only lets you select text on a post's detail page, so each row opens one
-// showing the emote large with its code on its own line, ready to long-press and copy.
+// The Emotes tab is a grid. Tapping a tile opens Flare's viewer, which shows the emote
+// large with this text under it, where the code can be long-pressed and copied.
 function emojiPost(e, context, detail) {
   var code = ":" + String(e.shortcode) + ":";
   var url = safeHttpsUrl(e.url, context.origin);
@@ -790,18 +797,9 @@ async function emojiPage(context, page) {
   });
   var start = page.direction !== "refresh" && /^\d+$/.test(String(page.cursor || "")) ? Number(page.cursor) : 0;
   var size = clamp(page.limit, 1, 40);
-  var items = list.slice(start, start + size).map(function (e) { return { type: "post", post: emojiPost(e, context, false) }; });
+  var items = list.slice(start, start + size).map(function (e) { return { type: "post", post: emojiPost(e, context, true) }; });
   var next = start + size;
   return next < list.length ? { items: items, olderCursor: String(next), endReached: false } : { items: items, endReached: true };
-}
-
-function noteItem(context, id, text) {
-  return { type: "post", post: {
-    key: { id: "note:" + id, host: originHost(context.origin) },
-    createdAt: new Date(0).toISOString(),
-    content: { format: "html", value: "<p>" + esc(text) + "</p>" },
-    detailType: "unknown",
-  } };
 }
 
 async function customEmojis(context) {
@@ -824,6 +822,24 @@ function quickChips(context, emojiList) {
     chips.push({ name: ":" + e.shortcode + ":", isUnicode: false, url: safeHttpsUrl(e.url, context.origin) });
   });
   return chips;
+}
+
+// Deletes one of your posts. Wafrn's own API (email+password sign-in) is used when
+// available; otherwise the Mastodon-style API.
+async function deletePost(context, postKey) {
+  var status = (await authed(context, "/api/v1/statuses/" + encodeURIComponent(postKey))).data;
+  if (!isOwnPost(status, context)) validationError("You can only delete your own posts");
+  var cred = (await flare.credential.read()) || {};
+  var uuid = decodeId(postKey);
+  if (cred.jwt && uuid) {
+    var result = (await apiRequest(context.origin, addQuery("/api/deletePost", { id: uuid }), {
+      method: "DELETE",
+      token: String(cred.jwt),
+    })).data || {};
+    if (result.success !== true) fail("Remote", remoteMessage(result, "Wafrn couldn't delete this post"));
+    return;
+  }
+  await authed(context, "/api/v1/statuses/" + encodeURIComponent(postKey), { method: "DELETE" });
 }
 
 async function sendReaction(context, postKey, emojiName, undo) {
@@ -954,7 +970,7 @@ function mapPost(status, context) {
     repliesCount: count(status.replies_count),
   };
   if (status.account) post.author = mapProfile(status.account, origin);
-  if (!status.reblog) post.actions = postActions(status);
+  if (!status.reblog) post.actions = postActions(status, context);
   var url = safeHttpsUrl(status.url || status.uri, origin);
   if (url) post.url = url;
   if (status.in_reply_to_id != null) post.replyTo = { id: String(status.in_reply_to_id), host: host };
@@ -965,14 +981,21 @@ function mapPost(status, context) {
   return post;
 }
 
-function postActions(status) {
+function postActions(status, context) {
   var liked = status.favourited === true;
   var reblogged = status.reblogged === true;
-  return [
+  var actions = [
     { action: "Reply", count: count(status.replies_count) },
     { action: reblogged ? "Unrepost" : "Repost", active: reblogged, count: count(status.reblogs_count) },
     { action: liked ? "Unfavourite" : "Favourite", active: liked, count: count(status.favourites_count) },
   ];
+  if (isOwnPost(status, context)) actions.push({ action: "Delete" });
+  return actions;
+}
+
+function isOwnPost(status, context) {
+  return !!(context && status && status.account && status.account.id != null &&
+    String(status.account.id) === String(context.accountId));
 }
 
 function tagsHtml(status) {
