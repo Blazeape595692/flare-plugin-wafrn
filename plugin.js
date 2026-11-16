@@ -33,6 +33,7 @@ var QUICK_UNICODE = ["😂", "😮", "😢"];
 var QUICK_CUSTOM_COUNT = 2;
 var EMOJI_CACHE_MS = 10 * 60 * 1000;
 var emojiCache = {}; // origin -> { at, list }; disposable runtime cache
+var emojiTabCache = {}; // origin -> list shown in the Custom emotes tab, for its older pages
 
 var NOTIFICATION_TYPES = {
   mention: ["mention"],
@@ -213,6 +214,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
         if (id === "local") return statusPage(context, "/api/v1/timelines/public", request.page, { local: "true" });
         if (id === "explore") return statusPage(context, "/api/v1/timelines/public", request.page, {});
         // The same feeds without Bluesky (ATproto) posts, reposts of them, or Bluesky reposters.
+        if (id === "emojis") return emojiPage(context, request.page);
         if (id === "home-nobsky") return statusPage(context, "/api/v1/timelines/home", request.page, {}, notBluesky);
         if (id === "explore-nobsky") return statusPage(context, "/api/v1/timelines/public", request.page, {}, notBluesky);
         unsupportedError("Unknown Wafrn timeline");
@@ -734,6 +736,46 @@ function emojify(html, map) {
 
 function emojiImageUrl(origin, uuid) {
   return requireOrigin(origin) + "/api/v2/cache/emoji/" + encodeURIComponent(uuid) + "?format=webp&size=small";
+}
+
+// The "Custom emotes" tab: every custom emoji on this server with its :code:, so it can
+// be looked up and typed into a post or reply. Rows open the emoji image when tapped.
+async function emojiPage(context, page) {
+  var list;
+  if (page.direction === "refresh" || !emojiTabCache[context.origin]) {
+    list = asArray((await apiRequest(context.origin, "/api/v1/custom_emojis", {})).data)
+      .filter(function (e) { return e && e.shortcode && safeHttpsUrl(e.url, context.origin); });
+    emojiTabCache[context.origin] = list;
+  } else {
+    list = emojiTabCache[context.origin];
+  }
+  list = list.slice().sort(function (a, b) {
+    var ca = String(a.category || ""), cb = String(b.category || "");
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return String(a.shortcode).toLowerCase() < String(b.shortcode).toLowerCase() ? -1 : 1;
+  });
+  var start = page.direction !== "refresh" && /^\d+$/.test(String(page.cursor || "")) ? Number(page.cursor) : 0;
+  var size = clamp(page.limit, 1, 40);
+  var host = originHost(context.origin);
+  var items = list.slice(start, start + size).map(function (e) {
+    var code = ":" + String(e.shortcode) + ":";
+    var url = safeHttpsUrl(e.url, context.origin);
+    var img = safeHttpsUrl(e.static_url, context.origin) || url;
+    var html = '<p><emoji target="' + esc(img) + '" alt="' + esc(code) + '"></emoji> ' + esc(code) + "</p>";
+    if (e.category) html += "<p><small>" + esc(String(e.category)) + "</small></p>";
+    return {
+      type: "post",
+      post: {
+        key: { id: "emoji:" + String(e.shortcode), host: host },
+        createdAt: new Date(0).toISOString(),
+        content: { format: "html", value: html },
+        url: url,
+        detailType: "link",
+      },
+    };
+  });
+  var next = start + size;
+  return next < list.length ? { items: items, olderCursor: String(next), endReached: false } : { items: items, endReached: true };
 }
 
 async function customEmojis(context) {
