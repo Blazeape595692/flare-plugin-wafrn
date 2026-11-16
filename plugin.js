@@ -563,6 +563,12 @@ async function enrichItems(items, context) {
   if (!targets.length) return;
   var cred = (await flare.credential.read()) || {};
   var jwt = typeof cred.jwt === "string" && cred.jwt ? cred.jwt : null;
+  if (!jwt) {
+    // Without the email+password session Wafrn can't delete posts, so don't offer it.
+    targets.forEach(function (t) {
+      if (t.post.actions) t.post.actions = t.post.actions.filter(function (a) { return a.action !== "Delete"; });
+    });
+  }
   var me = decodeId(String(context.accountId || ""));
   // Fetch the emoji list and every post at once, each with a short limit, so a slow
   // server only drops the extras instead of the whole timeline.
@@ -824,22 +830,21 @@ function quickChips(context, emojiList) {
   return chips;
 }
 
-// Deletes one of your posts. Wafrn's own API (email+password sign-in) is used when
-// available; otherwise the Mastodon-style API.
+// Deletes one of your posts through Wafrn's own API.
 async function deletePost(context, postKey) {
   var status = (await authed(context, "/api/v1/statuses/" + encodeURIComponent(postKey))).data;
   if (!isOwnPost(status, context)) validationError("You can only delete your own posts");
   var cred = (await flare.credential.read()) || {};
+  // Wafrn's Mastodon-style API has no delete; only its own API (which needs the
+  // email+password sign-in's session) can delete posts.
+  if (!cred.jwt) unsupportedError("Deleting posts needs the \"Sign in with email and password\" option; add the account again that way");
   var uuid = decodeId(postKey);
-  if (cred.jwt && uuid) {
-    var result = (await apiRequest(context.origin, addQuery("/api/deletePost", { id: uuid }), {
-      method: "DELETE",
-      token: String(cred.jwt),
-    })).data || {};
-    if (result.success !== true) fail("Remote", remoteMessage(result, "Wafrn couldn't delete this post"));
-    return;
-  }
-  await authed(context, "/api/v1/statuses/" + encodeURIComponent(postKey), { method: "DELETE" });
+  if (!uuid) notFound("Unknown Wafrn post");
+  var result = (await apiRequest(context.origin, addQuery("/api/deletePost", { id: uuid }), {
+    method: "DELETE",
+    token: String(cred.jwt),
+  })).data || {};
+  if (result.success !== true) fail("Remote", remoteMessage(result, "Wafrn couldn't delete this post"));
 }
 
 async function sendReaction(context, postKey, emojiName, undo) {
