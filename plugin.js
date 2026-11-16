@@ -568,6 +568,10 @@ async function enrichItems(items, context) {
   await Promise.all(targets.map(async function (t) {
     var data = await lookups[t.uuid];
     if (!data || typeof data !== "object") return;
+    var inline = postEmojiMap(data, t.uuid, context.origin);
+    if (Object.keys(inline).length) {
+      t.post.content = { format: "html", value: emojify(t.post.content.value, inline) };
+    }
     var reactions = buildReactions(data, t.uuid, me, !!jwt, quick, context.origin, local);
     if (reactions.length) t.post.emojiReactions = reactions;
     var quotes = quotedPosts(data, t.uuid, context);
@@ -641,7 +645,7 @@ function mapNativePost(p, data, context) {
   var post = {
     key: { id: key, host: originHost(origin) },
     createdAt: isoDate(p.createdAt),
-    content: { format: "html", value: String(p.content || "") },
+    content: { format: "html", value: emojify(String(p.content || ""), postEmojiMap(data, p.id, origin)) },
     media: asArray(data.medias).filter(function (m) { return m && m.postId === p.id; }).map(function (m) {
       var type = String(m.mediaType || "");
       var kind = type.indexOf("video/") === 0 ? "video" : type.indexOf("audio/") === 0 ? "audio" : type === "image/gif" ? "gif" : type.indexOf("image/") === 0 || !type ? "image" : null;
@@ -679,6 +683,53 @@ function mapNativeUser(u, origin) {
   var link = safeHttpsUrl(u.remoteId, null);
   if (link) profile.url = link;
   return profile;
+}
+
+// ------------------------------------------------------------ custom emoji
+//
+// Posts carry custom emoji as :shortcode: text. Flare draws <emoji target="url"> inline,
+// so each known shortcode outside tags and links becomes one.
+
+function mastodonEmojis(list, origin) {
+  var map = {};
+  asArray(list).forEach(function (e) {
+    if (!e || !e.shortcode) return;
+    var url = safeHttpsUrl(e.static_url || e.url, origin);
+    if (url) map[":" + String(e.shortcode).replace(/^:|:$/g, "") + ":"] = url;
+  });
+  return map;
+}
+
+/** Emojis Wafrn's own API lists for one post (postEmojiRelation), by :name:. */
+function postEmojiMap(data, postId, origin) {
+  var relations = (data && data.emojiRelations) || {};
+  var byId = {};
+  asArray(relations.emojis).forEach(function (e) { if (e && e.id) byId[e.id] = e; });
+  var map = {};
+  asArray(relations.postEmojiRelation).forEach(function (r) {
+    var e = r && r.postId === postId ? byId[r.emojiId] : null;
+    if (!e || !e.name) return;
+    var url = e.uuid ? emojiImageUrl(origin, e.uuid) : safeHttpsUrl(e.url, origin);
+    if (url) map[":" + String(e.name).replace(/^:|:$/g, "") + ":"] = url;
+  });
+  return map;
+}
+
+function emojify(html, map) {
+  if (!html || !map || !Object.keys(map).length || html.indexOf(":") < 0) return html;
+  var depth = 0; // inside <a>, <code> or <pre>: leave text alone
+  return html.split(/(<[^>]*>)/).map(function (part) {
+    if (part.charAt(0) === "<") {
+      var m = part.match(/^<(\/?)(a|code|pre)\b/i);
+      if (m) depth = Math.max(0, depth + (m[1] ? -1 : 1));
+      return part;
+    }
+    if (depth) return part;
+    return part.replace(/:[A-Za-z0-9_+-]+:/g, function (code) {
+      var url = map[code];
+      return url ? '<emoji target="' + esc(url) + '" alt="' + esc(code) + '"></emoji>' : code;
+    });
+  }).join("");
 }
 
 function emojiImageUrl(origin, uuid) {
@@ -826,7 +877,7 @@ function mapPost(status, context) {
   var post = {
     key: { id: String(status.id), host: host },
     createdAt: isoDate(status.created_at),
-    content: { format: "html", value: String(status.content || "") + tagsHtml(status) },
+    content: { format: "html", value: emojify(String(status.content || ""), mastodonEmojis(status.emojis, origin)) + tagsHtml(status) },
     media: mapMediaList(status.media_attachments, origin),
     sensitive: status.sensitive === true,
     visibility: fromWafrnVisibility(status.visibility),
@@ -887,7 +938,7 @@ function mapProfile(account, origin) {
     key: { id: String(account.id), host: host },
     handle: "@" + (acct.indexOf("@") >= 0 ? acct : acct + "@" + host),
     displayName: String(account.display_name || account.username || acct),
-    description: { format: "html", value: String(account.note || "") },
+    description: { format: "html", value: emojify(String(account.note || ""), mastodonEmojis(account.emojis, origin)) },
     followersCount: count(account.followers_count),
     followingCount: count(account.following_count),
     postsCount: count(account.statuses_count),
