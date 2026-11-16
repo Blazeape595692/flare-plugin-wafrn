@@ -255,12 +255,14 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
 
     post: {
       async detail(request, context) {
+        if (/^emoji:/.test(request.key.id)) return { post: await emojiDetail(context, request.key.id) };
         var status = (await authed(context, "/api/v1/statuses/" + encodeURIComponent(request.key.id))).data;
         var item = mapTimelineItem(status, context);
         await enrichItems([item], context);
         return item.presentation ? { post: item.post, presentation: item.presentation } : { post: item.post };
       },
       async context(request, context) {
+        if (/^emoji:/.test(request.key.id)) return { items: [{ type: "post", post: await emojiDetail(context, request.key.id) }], endReached: true };
         var id = encodeURIComponent(request.key.id);
         var detail = (await authed(context, "/api/v1/statuses/" + id)).data;
         var thread = (await authed(context, "/api/v1/statuses/" + id + "/context")).data || {};
@@ -745,15 +747,42 @@ function emojiImageUrl(origin, uuid) {
 
 // The Emotes profile tab (on your own profile): every custom emoji on this server with its :code:, so it can
 // be looked up and typed into a post or reply. Rows open the emoji image when tapped.
-async function emojiPage(context, page) {
-  var list;
-  if (page.direction === "refresh" || !emojiTabCache[context.origin]) {
-    list = asArray((await apiRequest(context.origin, "/api/v1/custom_emojis", {})).data)
+async function emojiList(context, fresh) {
+  if (fresh || !emojiTabCache[context.origin]) {
+    emojiTabCache[context.origin] = asArray((await apiRequest(context.origin, "/api/v1/custom_emojis", {})).data)
       .filter(function (e) { return e && e.shortcode && safeHttpsUrl(e.url, context.origin); });
-    emojiTabCache[context.origin] = list;
-  } else {
-    list = emojiTabCache[context.origin];
   }
+  return emojiTabCache[context.origin];
+}
+
+// Flare only lets you select text on a post's detail page, so each row opens one
+// showing the emote large with its code on its own line, ready to long-press and copy.
+function emojiPost(e, context, detail) {
+  var code = ":" + String(e.shortcode) + ":";
+  var url = safeHttpsUrl(e.url, context.origin);
+  var img = safeHttpsUrl(e.static_url, context.origin) || url;
+  var html = '<p><emoji target="' + esc(img) + '" alt="' + esc(code) + '"></emoji> ' + esc(code) + "</p>";
+  if (detail) html = "<p>" + esc(code) + "</p><p><small>Long-press the code to select and copy it.</small></p>";
+  if (e.category) html += "<p><small>" + esc(String(e.category)) + "</small></p>";
+  var post = {
+    key: { id: "emoji:" + String(e.shortcode), host: originHost(context.origin) },
+    createdAt: new Date(0).toISOString(),
+    content: { format: "html", value: html },
+  };
+  if (detail) post.media = [{ id: "emoji:" + String(e.shortcode), type: /\.gif(\?|$)/i.test(url) ? "gif" : "image", url: url, description: code }];
+  return post;
+}
+
+async function emojiDetail(context, id) {
+  var name = String(id).slice("emoji:".length);
+  var find = function (list) { return list.filter(function (e) { return String(e.shortcode) === name; })[0]; };
+  var e = find(await emojiList(context, false)) || find(await emojiList(context, true));
+  if (!e) notFound("That emote is no longer on this server");
+  return emojiPost(e, context, true);
+}
+
+async function emojiPage(context, page) {
+  var list = await emojiList(context, page.direction === "refresh");
   list = list.slice().sort(function (a, b) {
     var ca = String(a.category || ""), cb = String(b.category || "");
     if (ca !== cb) return ca < cb ? -1 : 1;
@@ -761,24 +790,7 @@ async function emojiPage(context, page) {
   });
   var start = page.direction !== "refresh" && /^\d+$/.test(String(page.cursor || "")) ? Number(page.cursor) : 0;
   var size = clamp(page.limit, 1, 40);
-  var host = originHost(context.origin);
-  var items = list.slice(start, start + size).map(function (e) {
-    var code = ":" + String(e.shortcode) + ":";
-    var url = safeHttpsUrl(e.url, context.origin);
-    var img = safeHttpsUrl(e.static_url, context.origin) || url;
-    var html = '<p><emoji target="' + esc(img) + '" alt="' + esc(code) + '"></emoji> ' + esc(code) + "</p>";
-    if (e.category) html += "<p><small>" + esc(String(e.category)) + "</small></p>";
-    return {
-      type: "post",
-      post: {
-        key: { id: "emoji:" + String(e.shortcode), host: host },
-        createdAt: new Date(0).toISOString(),
-        content: { format: "html", value: html },
-        url: url,
-        detailType: "link",
-      },
-    };
-  });
+  var items = list.slice(start, start + size).map(function (e) { return { type: "post", post: emojiPost(e, context, false) }; });
   var next = start + size;
   return next < list.length ? { items: items, olderCursor: String(next), endReached: false } : { items: items, endReached: true };
 }
