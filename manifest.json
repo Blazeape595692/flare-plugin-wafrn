@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "apiVersion": 1,
   "id": "dev.flareplugins.wafrn",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "name": "Wafrn",
   "description": "Read and post on Wafrn, the Tumblr-inspired fediverse and Bluesky server",
   "permissions": {
@@ -69,7 +69,9 @@
     "timelines": [
       { "id": "home", "title": "Following", "icon": "Home", "defaultForNewAccount": true },
       { "id": "local", "title": "Local", "icon": "Local" },
-      { "id": "explore", "title": "Wafrn & Friends", "icon": "World" }
+      { "id": "explore", "title": "Wafrn & Friends", "icon": "World" },
+      { "id": "home-nobsky", "title": "Following (no Bluesky)", "icon": "Home" },
+      { "id": "explore-nobsky", "title": "Wafrn & Friends (no Bluesky)", "icon": "World" }
     ],
     "profileTabs": [
       { "id": "posts", "title": "Posts", "icon": "Profile" },

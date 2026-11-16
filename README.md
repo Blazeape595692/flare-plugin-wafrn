@@ -8,7 +8,7 @@ the Tumblr-inspired social network that federates with the fediverse and Bluesky
 | Feature | Notes |
 | --- | --- |
 | Sign in | Email and password (needed for emoji reactions), or in-browser authorization. Works with any Wafrn server. |
-| Timelines | Following (default), Local, Wafrn & Friends |
+| Timelines | Following (default), Local, Wafrn & Friends. Following and Wafrn & Friends also come in "(no Bluesky)" versions you can add as tabs, which hide Bluesky (ATproto) posts and reposts. |
 | Posts | Detail view, full thread, like/unlike, reblog/unreblog, link cards, hashtags |
 | Quote posts | The quoted post is shown inside the quoting post, including in quote notifications |
 | Emoji reactions | Reactions with counts and your server's custom emojis. Tap one to add or remove yours. |

@@ -212,6 +212,9 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
         if (id === "home") return statusPage(context, "/api/v1/timelines/home", request.page, {});
         if (id === "local") return statusPage(context, "/api/v1/timelines/public", request.page, { local: "true" });
         if (id === "explore") return statusPage(context, "/api/v1/timelines/public", request.page, {});
+        // The same feeds without Bluesky (ATproto) posts, reposts of them, or Bluesky reposters.
+        if (id === "home-nobsky") return statusPage(context, "/api/v1/timelines/home", request.page, {}, notBluesky);
+        if (id === "explore-nobsky") return statusPage(context, "/api/v1/timelines/public", request.page, {}, notBluesky);
         unsupportedError("Unknown Wafrn timeline");
       },
     },
@@ -481,16 +484,45 @@ async function markNotificationsRead(context, newestId) {
 
 // ------------------------------------------------------------------ paging
 
-async function statusPage(context, path, page, params) {
-  var query = Object.assign({}, params, { limit: String(clamp(page.limit, 1, 40)) });
-  if (page.direction !== "refresh" && page.cursor) query.max_id = page.cursor;
-  var values = asArray((await authed(context, addQuery(path, query))).data);
-  var items = values.filter(Boolean).map(function (s) { return mapTimelineItem(s, context); });
+async function statusPage(context, path, page, params, keep) {
+  var limit = clamp(page.limit, 1, 40);
+  var cursor = page.direction !== "refresh" && page.cursor ? page.cursor : null;
+  var kept = [];
+  var last = null;
+  // With a filter, a page can come back empty; fetch a few more pages before giving up.
+  for (var round = 0; round < (keep ? 4 : 1); round++) {
+    var query = Object.assign({}, params, { limit: String(limit) });
+    if (cursor) query.max_id = cursor;
+    var values = asArray((await authed(context, addQuery(path, query))).data).filter(Boolean);
+    kept = kept.concat(keep ? values.filter(keep) : values);
+    last = values[values.length - 1];
+    // Wafrn's Link header may report http:// behind proxies, so page by the last ID.
+    if (!last || last.id == null) { last = null; break; }
+    cursor = String(last.id);
+    if (kept.length >= Math.min(limit, 10)) break;
+  }
+  var items = kept.map(function (s) { return mapTimelineItem(s, context); });
   await enrichItems(items, context);
-  var last = values[values.length - 1];
-  // Wafrn's Link header may report http:// behind proxies, so page by the last ID.
-  if (!last || last.id == null) return { items: items, endReached: true };
-  return { items: items, olderCursor: String(last.id), endReached: false };
+  if (!last) return { items: items, endReached: true };
+  return { items: items, olderCursor: cursor, endReached: false };
+}
+
+function notBluesky(status) {
+  return !isBlueskyAccount(status.account) && !isBlueskyStatus(status) &&
+    !(status.reblog && (isBlueskyAccount(status.reblog.account) || isBlueskyStatus(status.reblog)));
+}
+
+function isBlueskyStatus(status) {
+  return !!status && /^at:\/\//i.test(String(status.uri || ""));
+}
+
+// Wafrn stores Bluesky users by their bare handle (alice.bsky.social), fediverse users as
+// user@server, and local usernames can't contain dots.
+function isBlueskyAccount(account) {
+  if (!account) return false;
+  var acct = String(account.acct || account.username || "").replace(/^@/, "");
+  if (acct && acct.indexOf("@") < 0 && acct.indexOf(".") >= 0) return true;
+  return /^https:\/\/bsky\.app\//i.test(String(account.url || ""));
 }
 
 // ------------------------------------------------- reactions and quotes
