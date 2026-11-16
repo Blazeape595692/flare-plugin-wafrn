@@ -512,17 +512,22 @@ function notBluesky(status) {
     !(status.reblog && (isBlueskyAccount(status.reblog.account) || isBlueskyStatus(status.reblog)));
 }
 
+// Bluesky content arrives two ways: Wafrn's own Bluesky link, and Bridgy Fed, which
+// copies Bluesky accounts into the fediverse as handle@bsky.brid.gy.
+var BLUESKY_URL = /^(at:\/\/|https:\/\/(bsky\.app|bsky\.brid\.gy)\/)/i;
+
 function isBlueskyStatus(status) {
-  return !!status && /^at:\/\//i.test(String(status.uri || ""));
+  return !!status && (BLUESKY_URL.test(String(status.uri || "")) || BLUESKY_URL.test(String(status.url || "")));
 }
 
 // Wafrn stores Bluesky users by their bare handle (alice.bsky.social), fediverse users as
 // user@server, and local usernames can't contain dots.
 function isBlueskyAccount(account) {
   if (!account) return false;
-  var acct = String(account.acct || account.username || "").replace(/^@/, "");
+  var acct = String(account.acct || account.username || "").replace(/^@/, "").toLowerCase();
   if (acct && acct.indexOf("@") < 0 && acct.indexOf(".") >= 0) return true;
-  return /^https:\/\/bsky\.app\//i.test(String(account.url || ""));
+  if (/@bsky\.brid\.gy$/.test(acct)) return true;
+  return BLUESKY_URL.test(String(account.url || ""));
 }
 
 // ------------------------------------------------- reactions and quotes
