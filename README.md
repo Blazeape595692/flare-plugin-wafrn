@@ -11,7 +11,7 @@ the Tumblr-inspired social network that federates with the fediverse and Bluesky
 | Timelines | Following (default), Local, Wafrn & Friends. Following and Wafrn & Friends also come in "(no Bluesky)" versions you can add as tabs, which hide Bluesky (ATproto) posts and reposts, including Bluesky accounts bridged in through Bridgy Fed (`@bsky.brid.gy`). |
 | Posts | Detail view, full thread, like/unlike, reblog/unreblog, link cards, hashtags, custom emoji shown inline in posts and bios (Flare shows display names as plain text, so emoji there stay as `:name:`) |
 | Quote posts | The quoted post is shown inside the quoting post, including in quote notifications |
-| Emoji reactions | Reactions with counts and your server's custom emojis. Tap one to add or remove yours. A "Custom emotes" tab you can add lists every emote on your server with its `:code:` to type in posts and replies. |
+| Emoji reactions | Reactions with counts and your server's custom emojis. Tap one to add or remove yours. Your profile (Me in the account menu) has an Emotes tab listing every emote on your server with its `:code:` to type in posts and replies. |
 | Profiles | Profile pages with Posts and Media tabs, follow/unfollow |
 | Notifications | All / Mentions / Likes filters, unread badge. Covers likes, reblogs, follows, emoji reactions, quotes, asks and bites. |
 | Compose | Text, images/video/audio with alt text, content warnings, visibility, replies |

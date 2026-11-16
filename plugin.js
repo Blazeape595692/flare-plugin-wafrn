@@ -214,7 +214,6 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
         if (id === "local") return statusPage(context, "/api/v1/timelines/public", request.page, { local: "true" });
         if (id === "explore") return statusPage(context, "/api/v1/timelines/public", request.page, {});
         // The same feeds without Bluesky (ATproto) posts, reposts of them, or Bluesky reposters.
-        if (id === "emojis") return emojiPage(context, request.page);
         if (id === "home-nobsky") return statusPage(context, "/api/v1/timelines/home", request.page, {}, notBluesky);
         if (id === "explore-nobsky") return statusPage(context, "/api/v1/timelines/public", request.page, {}, notBluesky);
         unsupportedError("Unknown Wafrn timeline");
@@ -235,6 +234,12 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", {
         return mapProfile(data, context.origin);
       },
       async timeline(request, context) {
+        if (request.tabId === "emotes") {
+          // Flare shows profile tabs on every profile; the list belongs on your own.
+          if (String(request.profile.id) === String(context.accountId)) return emojiPage(context, request.page);
+          return { items: [noteItem(context, "emotes-elsewhere",
+            "Your server's custom emotes are listed in the Emotes tab of your own profile (Me).")], endReached: true };
+        }
         var params = {};
         if (request.tabId === "media" || (request.parameters && request.parameters.onlyMedia === "true")) {
           params.only_media = "true";
@@ -738,7 +743,7 @@ function emojiImageUrl(origin, uuid) {
   return requireOrigin(origin) + "/api/v2/cache/emoji/" + encodeURIComponent(uuid) + "?format=webp&size=small";
 }
 
-// The "Custom emotes" tab: every custom emoji on this server with its :code:, so it can
+// The Emotes profile tab (on your own profile): every custom emoji on this server with its :code:, so it can
 // be looked up and typed into a post or reply. Rows open the emoji image when tapped.
 async function emojiPage(context, page) {
   var list;
@@ -776,6 +781,15 @@ async function emojiPage(context, page) {
   });
   var next = start + size;
   return next < list.length ? { items: items, olderCursor: String(next), endReached: false } : { items: items, endReached: true };
+}
+
+function noteItem(context, id, text) {
+  return { type: "post", post: {
+    key: { id: "note:" + id, host: originHost(context.origin) },
+    createdAt: new Date(0).toISOString(),
+    content: { format: "html", value: "<p>" + esc(text) + "</p>" },
+    detailType: "unknown",
+  } };
 }
 
 async function customEmojis(context) {
