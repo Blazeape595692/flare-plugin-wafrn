@@ -667,7 +667,7 @@ function mapNativePost(p, data, context) {
   var post = {
     key: { id: key, host: originHost(origin) },
     createdAt: isoDate(p.createdAt),
-    content: { format: "html", value: emojify(String(p.content || ""), postEmojiMap(data, p.id, origin)) },
+    content: { format: "html", value: emojify(nativeAskHtml(p, data) + String(p.content || ""), postEmojiMap(data, p.id, origin)) },
     media: asArray(data.medias).filter(function (m) { return m && m.postId === p.id; }).map(function (m) {
       var type = String(m.mediaType || "");
       var kind = type.indexOf("video/") === 0 ? "video" : type.indexOf("audio/") === 0 ? "audio" : type === "image/gif" ? "gif" : type.indexOf("image/") === 0 || !type ? "image" : null;
@@ -966,7 +966,7 @@ function mapPost(status, context) {
   var post = {
     key: { id: String(status.id), host: host },
     createdAt: isoDate(status.created_at),
-    content: { format: "html", value: emojify(String(status.content || ""), mastodonEmojis(status.emojis, origin)) + tagsHtml(status) },
+    content: { format: "html", value: emojify(askHtml(String(status.content || "")), mastodonEmojis(status.emojis, origin)) + tagsHtml(status) },
     media: mapMediaList(status.media_attachments, origin),
     sensitive: status.sensitive === true,
     visibility: fromWafrnVisibility(status.visibility),
@@ -1001,6 +1001,29 @@ function postActions(status, context) {
 function isOwnPost(status, context) {
   return !!(context && status && status.account && status.account.id != null &&
     String(status.account.id) === String(context.accountId));
+}
+
+// Asks: Wafrn's Mastodon API starts an answered ask with "<p><b>Name</b> asked: question</p>".
+// Shown like Tumblr asks instead: the question in a quote box, then the answer.
+function askHtml(content) {
+  var m = /^\s*<p><b>([^<]*)<\/b> asked: ([\s\S]*?)<\/p>/.exec(content);
+  if (!m) return content;
+  return askBox(m[1], m[2]) + content.slice(m[0].length);
+}
+
+/** Builds the ask box; name and question arrive already escaped. */
+function askBox(name, question) {
+  var lines = String(question).trim().split(/\n+/).filter(Boolean);
+  return "<blockquote><p><b>" + (name || "Anonymous") + "</b> asked:</p>" +
+    (lines.length ? lines.map(function (l) { return "<p>" + l + "</p>"; }).join("") : "") + "</blockquote>";
+}
+
+/** The ask box for a post from Wafrn's own API (quoted posts), from its asks list. */
+function nativeAskHtml(p, data) {
+  var ask = asArray(data && data.asks).filter(function (a) { return a && a.postId === p.id; })[0];
+  if (!ask) return "";
+  var asker = ask.userAsker ? asArray(data.users).filter(function (u) { return u && u.id === ask.userAsker; })[0] : null;
+  return askBox(esc(asker ? String(asker.name || asker.url || "Anonymous") : "Anonymous"), esc(String(ask.question || "")));
 }
 
 function tagsHtml(status) {
