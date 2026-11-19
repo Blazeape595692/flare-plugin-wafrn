@@ -11,6 +11,7 @@
 // Each request gets its own limit, shorter than Flare's 30 seconds for a whole call, so a
 // slow server fails that request (a normal error) instead of the call (a plugin crash).
 var REQUEST_TIMEOUT_MS = 12000;
+var DETECTOR_REQUEST_TIMEOUT_MS = 8000;
 var SIDE_REQUEST_TIMEOUT_MS = 5000; // extras (reactions, quotes, read markers) that may be skipped
 
 var WAFRN_CAPABILITIES = {
@@ -47,7 +48,8 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
       var origin = requireOrigin(request.origin || context.origin);
       var instance;
       try {
-        instance = (await apiRequest(origin, "/api/v2/instance")).data;
+        // Flare gives a detector 10 s in all and refuses requests allowed to run longer.
+        instance = (await apiRequest(origin, "/api/v2/instance", { timeoutMillis: DETECTOR_REQUEST_TIMEOUT_MS })).data;
       } catch (_) {
         return { match: "none", canonicalOrigin: origin };
       }
