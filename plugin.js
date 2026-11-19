@@ -20,6 +20,7 @@ var WAFRN_CAPABILITIES = {
   "flare.datasource.relation/v1": ["state", "mutate"],
   "flare.datasource.notification/v1": ["page", "badge"],
   "flare.datasource.compose/v1": ["publish"],
+  "flare.datasource.search/v1": ["posts", "profiles", "discoverPosts", "discoverProfiles", "discoverHashtags"],
 };
 
 var OAUTH_SCOPES = "read write follow";
@@ -309,6 +310,24 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         var updated = { type: "post", post: mapPost(status, context) };
         await enrichItems([updated], context);
         return { type: "updatedPost", post: updated.post };
+      },
+    },
+
+    search: {
+      async posts(request, context) {
+        return searchPosts(context, request.query, request.page);
+      },
+      async profiles(request, context) {
+        return searchProfiles(context, request.query, request.page);
+      },
+      async discoverPosts(request, context) {
+        return statusPage(context, "/api/v1/timelines/public", request.page, {});
+      },
+      async discoverProfiles() {
+        return { items: [], endReached: true }; // Wafrn has no "suggested people" list for apps
+      },
+      async discoverHashtags() {
+        return { items: [], endReached: true };
       },
     },
 
@@ -862,21 +881,54 @@ async function bookmarkPage(context, page) {
   if (cursor) query.startScroll = cursor; else query.page = "-1";
   var data = (await apiRequest(context.origin, addQuery("/api/v2/dashboard", query), { token: String(cred.jwt) })).data || {};
   var posts = asArray(data.posts).filter(function (p) { return p && p.id; });
+  var items = nativePostItems(posts, data, context);
+  var last = posts[posts.length - 1];
+  var lastTime = last ? Date.parse(last.createdAt) : NaN;
+  if (!posts.length || !Number.isFinite(lastTime)) return { items: items, endReached: true };
+  return { items: items, olderCursor: String(lastTime), endReached: false };
+}
+
+/** Posts from Wafrn's own API as timeline items; a reblog with no text shows what it reblogged. */
+function nativePostItems(posts, data, context) {
   var items = [];
   posts.forEach(function (p) {
-    // A bookmarked reblog has no text of its own; show the post it reblogged.
     var shown = p;
     if (!String(p.content || "").trim() && p.parentId) {
       shown = asArray(p.ancestors).filter(function (a) { return a && a.id === p.parentId; })[0] ||
         asArray(data.posts).filter(function (a) { return a && a.id === p.parentId; })[0] || p;
     }
     var mapped = mapNativePost(shown, data, context);
-    if (mapped) items.push({ type: "post", post: mapped });
+    if (mapped && items.length < 200) items.push({ type: "post", post: mapped });
   });
-  var last = posts[posts.length - 1];
-  var lastTime = last ? Date.parse(last.createdAt) : NaN;
-  if (!posts.length || !Number.isFinite(lastTime)) return { items: items, endReached: true };
-  return { items: items, olderCursor: String(lastTime), endReached: false };
+  return items;
+}
+
+// Search. People come from the Mastodon-style API (works with either sign-in). Posts
+// only from Wafrn's own search (tags first, then text), which needs the email+password
+// sign-in's session.
+async function searchPosts(context, query, page) {
+  var term = String(query || "").trim().replace(/^#/, "");
+  if (!term) return { items: [], endReached: true };
+  var cred = (await flare.credential.read()) || {};
+  if (!cred.jwt) unsupportedError("Searching posts needs the \"Sign in with email and password\" option; add the account again that way. Searching people works either way.");
+  var n = page.direction !== "refresh" && /^\d{1,4}$/.test(String(page.cursor || "")) ? Number(page.cursor) : 0;
+  var data = (await apiRequest(context.origin, addQuery("/api/v2/search", { term: term, page: String(n) }), { token: String(cred.jwt) })).data || {};
+  var found = data.posts || {};
+  var posts = asArray(found.posts).filter(function (p) { return p && p.id; });
+  var items = nativePostItems(posts, found, context);
+  return posts.length ? { items: items, olderCursor: String(n + 1), endReached: false } : { items: items, endReached: true };
+}
+
+async function searchProfiles(context, query, page) {
+  var q = String(query || "").trim();
+  if (!q) return { items: [], endReached: true };
+  var offset = page.direction !== "refresh" && /^\d{1,6}$/.test(String(page.cursor || "")) ? Number(page.cursor) : 0;
+  var limit = clamp(page.limit, 1, 40);
+  var list = asArray((await authed(context, addQuery("/api/v1/accounts/search", {
+    q: q, limit: String(limit), offset: String(offset), resolve: offset ? "false" : "true",
+  }))).data).filter(function (a) { return a && a.id != null; });
+  var items = list.map(function (a) { return mapProfile(a, context.origin); });
+  return list.length >= limit ? { items: items, olderCursor: String(offset + list.length), endReached: false } : { items: items, endReached: true };
 }
 
 async function sendReaction(context, postKey, emojiName, undo) {
