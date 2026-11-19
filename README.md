@@ -12,6 +12,7 @@ the Tumblr-inspired social network that federates with the fediverse and Bluesky
 | Posts | Detail view, full thread, like/unlike, reblog/unreblog, delete your own posts (needs the email+password sign-in; Wafrn has no delete for browser sign-in), link cards, hashtags, custom emoji shown inline in posts and bios (Flare shows display names as plain text, so emoji there stay as `:name:`) |
 | Quote posts | The quoted post is shown inside the quoting post, including in quote notifications |
 | Emoji reactions | Reactions with counts and your server's custom emojis. Tap one to add or remove yours. Your profile (Me in the account menu) has an Emotes tab listing every emote on your server with its `:code:` to type in posts and replies; shown as a grid; tap one to see it large with its code underneath, then long-press the code to copy it. |
+| Bookmarks | Your profile has a Bookmarks tab (between Media and Emotes) listing your Wafrn bookmarks; needs the email+password sign-in. Wafrn has no way for apps to list your likes. |
 | Profiles | Profile pages with Posts and Media tabs, follow/unfollow |
 | Notifications | All / Mentions / Likes filters, unread badge. Covers likes, reblogs, follows, emoji reactions, quotes, asks and bites. |
 | Compose | Text, images/video/audio with alt text, content warnings, visibility, replies |

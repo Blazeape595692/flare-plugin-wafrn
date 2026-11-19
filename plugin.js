@@ -234,6 +234,10 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         return mapProfile(data, context.origin);
       },
       async timeline(request, context) {
+        if (request.tabId === "bookmarks") {
+          if (String(request.profile.id) === String(context.accountId)) return bookmarkPage(context, request.page);
+          return { items: [], endReached: true };
+        }
         if (request.tabId === "emotes") {
           // Flare shows profile tabs on every profile; the list belongs on your own.
           if (String(request.profile.id) === String(context.accountId)) return emojiPage(context, request.page);
@@ -845,6 +849,34 @@ async function deletePost(context, postKey) {
     token: String(cred.jwt),
   })).data || {};
   if (result.success !== true) fail("Remote", remoteMessage(result, "Wafrn couldn't delete this post"));
+}
+
+// The Bookmarks tab on your own profile. Only Wafrn's own API lists bookmarks (dashboard
+// level 50, newest post first, paged by the last post's time), and it needs the
+// email+password sign-in's session.
+async function bookmarkPage(context, page) {
+  var cred = (await flare.credential.read()) || {};
+  if (!cred.jwt) unsupportedError("Bookmarks need the \"Sign in with email and password\" option; add the account again that way");
+  var query = { level: "50" };
+  var cursor = page.direction !== "refresh" && /^\d{1,15}$/.test(String(page.cursor || "")) ? String(page.cursor) : null;
+  if (cursor) query.startScroll = cursor; else query.page = "-1";
+  var data = (await apiRequest(context.origin, addQuery("/api/v2/dashboard", query), { token: String(cred.jwt) })).data || {};
+  var posts = asArray(data.posts).filter(function (p) { return p && p.id; });
+  var items = [];
+  posts.forEach(function (p) {
+    // A bookmarked reblog has no text of its own; show the post it reblogged.
+    var shown = p;
+    if (!String(p.content || "").trim() && p.parentId) {
+      shown = asArray(p.ancestors).filter(function (a) { return a && a.id === p.parentId; })[0] ||
+        asArray(data.posts).filter(function (a) { return a && a.id === p.parentId; })[0] || p;
+    }
+    var mapped = mapNativePost(shown, data, context);
+    if (mapped) items.push({ type: "post", post: mapped });
+  });
+  var last = posts[posts.length - 1];
+  var lastTime = last ? Date.parse(last.createdAt) : NaN;
+  if (!posts.length || !Number.isFinite(lastTime)) return { items: items, endReached: true };
+  return { items: items, olderCursor: String(lastTime), endReached: false };
 }
 
 async function sendReaction(context, postKey, emojiName, undo) {
