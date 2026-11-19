@@ -69,6 +69,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         var origin = requireOrigin(request.origin || context.origin);
         var instance = (await apiRequest(origin, "/api/v2/instance")).data;
         if (!isWafrn(instance)) validationError("This server does not identify itself as Wafrn");
+        lastLimitedRequest = 0;
         var redirectUri = requiredString(request.redirectUri, "OAuth redirect URI is missing");
         var app = (
           await apiRequest(origin, "/api/v1/apps", {
@@ -152,8 +153,9 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         var code = String(v.code || "").replace(/\s+/g, "");
         var instance = (await apiRequest(origin, "/api/v2/instance")).data;
         if (!isWafrn(instance)) validationError("This server does not identify itself as Wafrn");
+        lastLimitedRequest = 0;
 
-        var login = (await apiRequest(origin, "/api/login", {
+        var login = (await oncePerSecond(origin, "/api/login", {
           method: "POST",
           body: { type: "json", value: { email: email, password: password } },
         })).data || {};
@@ -163,7 +165,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         var jwt = String(login.token);
         if (login.mfaRequired) {
           if (!code) validationError("This account uses two-factor authentication; enter your current code");
-          var mfa = (await apiRequest(origin, "/api/login/mfa", {
+          var mfa = (await oncePerSecond(origin, "/api/login/mfa", {
             method: "POST",
             token: jwt,
             body: { type: "json", value: { token: code } },
@@ -172,7 +174,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
           jwt = String(mfa.token);
         }
 
-        var app = (await apiRequest(origin, "/api/v1/apps", {
+        var app = (await oncePerSecond(origin, "/api/v1/apps", {
           method: "POST",
           body: { type: "form", values: { client_name: "Flare", redirect_uris: OOB_REDIRECT, scopes: OAUTH_SCOPES, website: "https://github.com/flaresocialapp/Flare" } },
         })).data;
@@ -931,6 +933,23 @@ async function searchProfiles(context, query, page) {
   }))).data).filter(function (a) { return a && a.id != null; });
   var items = list.map(function (a) { return mapProfile(a, context.origin); });
   return list.length >= limit ? { items: items, olderCursor: String(offset + list.length), endReached: false } : { items: items, endReached: true };
+}
+
+// Wafrn lets each address make one request per second to login, two-factor login and
+// app registration combined, so sign-in steps are spaced out. The plugin sandbox has no
+// timer; small host calls are used to let time pass.
+var lastLimitedRequest = 0;
+
+async function oncePerSecond(origin, path, options) {
+  var ready = lastLimitedRequest + 1100;
+  while (Date.now() < ready) {
+    try { await flare.crypto.randomHex(1); } catch (_) { /* only waiting */ }
+  }
+  try {
+    return await apiRequest(origin, path, options);
+  } finally {
+    lastLimitedRequest = Date.now();
+  }
 }
 
 async function sendReaction(context, postKey, emojiName, undo) {
