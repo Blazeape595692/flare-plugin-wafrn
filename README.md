@@ -26,8 +26,8 @@ posts, bookmarks, block/mute, polls and follower lists.
 
 Flare has no emoji picker for plugins, so:
 
-- Every post shows its reactions plus a few quick ones (😂 😮 😢 and two of your
-  server's custom emojis). Tap any of them to react; tap again to remove it.
+- A post shows the reactions it already has. Tap one to add the same reaction; tap
+  again to remove it.
 - To react with any other emoji, **reply with only that emoji** (e.g. `🎉`) or only a
   custom emoji code (e.g. `:blobcat:`). That adds a reaction instead of posting a reply.
   Anything longer is a normal reply.

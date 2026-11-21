@@ -28,11 +28,9 @@ var OAUTH_SCOPES = "read write follow";
 var OOB_REDIRECT = "urn:ietf:wg:oauth:2.0:oob";
 
 // Emoji reactions use Wafrn's own API (/api/emojiReact, /api/v3/post), which needs
-// the session token from an email+password sign-in. Flare has no emoji picker for
-// plugins, so posts also show a few zero-count "quick" chips, and replying with only
-// an emoji or :shortcode: reacts instead of posting a reply.
-var QUICK_UNICODE = ["😂", "😮", "😢"];
-var QUICK_CUSTOM_COUNT = 2;
+// the session token from an email+password sign-in. A post shows only the reactions it
+// already has; tapping one adds yours. Flare has no emoji picker for plugins, so replying
+// with only an emoji or :shortcode: reacts with something new instead of posting a reply.
 var EMOJI_CACHE_MS = 10 * 60 * 1000;
 var emojiCache = {}; // origin -> { at, list }; disposable runtime cache
 var emojiTabCache = {}; // origin -> list shown in the Custom emotes tab, for its older pages
@@ -610,7 +608,6 @@ async function enrichItems(items, context) {
     }
   });
   var emojiList = await emojis;
-  var quick = jwt ? quickChips(context, emojiList) : [];
   // Wafrn can only react with this server's own custom emojis (looked up by :name:).
   var local = {};
   emojiList.forEach(function (e) { local[":" + e.shortcode + ":"] = true; });
@@ -621,7 +618,7 @@ async function enrichItems(items, context) {
     if (Object.keys(inline).length) {
       t.post.content = { format: "html", value: emojify(t.post.content.value, inline) };
     }
-    var reactions = buildReactions(data, t.uuid, me, !!jwt, quick, context.origin, local);
+    var reactions = buildReactions(data, t.uuid, me, !!jwt, context.origin, local);
     if (reactions.length) t.post.emojiReactions = reactions;
     var quotes = quotedPosts(data, t.uuid, context);
     if (quotes.length) {
@@ -631,7 +628,7 @@ async function enrichItems(items, context) {
   }));
 }
 
-function buildReactions(data, uuid, me, canReact, quick, origin, local) {
+function buildReactions(data, uuid, me, canReact, origin, local) {
   var relations = data.emojiRelations || {};
   var emojis = {};
   asArray(relations.emojis).forEach(function (e) { if (e && e.id) emojis[e.id] = e; });
@@ -662,12 +659,6 @@ function buildReactions(data, uuid, me, canReact, quick, origin, local) {
     }
     seen[name] = true;
     out.push(chip);
-  });
-  quick.forEach(function (q) {
-    if (!seen[q.name] && out.length < 100) {
-      seen[q.name] = true;
-      out.push(Object.assign({ count: 0, me: false, enabled: true }, q));
-    }
   });
   return out.slice(0, 100);
 }
@@ -847,14 +838,6 @@ async function customEmojis(context) {
   }
   emojiCache[context.origin] = { at: Date.now(), list: list };
   return list;
-}
-
-function quickChips(context, emojiList) {
-  var chips = QUICK_UNICODE.map(function (e) { return { name: e, isUnicode: true }; });
-  emojiList.slice(0, QUICK_CUSTOM_COUNT).forEach(function (e) {
-    chips.push({ name: ":" + e.shortcode + ":", isUnicode: false, url: safeHttpsUrl(e.url, context.origin) });
-  });
-  return chips;
 }
 
 // Deletes one of your posts through Wafrn's own API.
