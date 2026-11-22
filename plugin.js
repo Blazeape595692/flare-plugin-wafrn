@@ -628,6 +628,8 @@ async function enrichItems(items, context) {
   }));
 }
 
+var LIKE_HEARTS = { "\u2764": true, "\u2665": true }; // ❤ ♥, with or without the emoji marker
+
 function buildReactions(data, uuid, me, canReact, origin, local) {
   var relations = data.emojiRelations || {};
   var emojis = {};
@@ -645,6 +647,8 @@ function buildReactions(data, uuid, me, canReact, origin, local) {
   counts.sort(function (a, b) { return Number(b.count) - Number(a.count); }).forEach(function (c) {
     var name = String(c.content);
     if (seen[name] || name.length > 512) return;
+    // Wafrn counts a heart reaction as a like, which the like button already shows.
+    if (LIKE_HEARTS[name.replace(/\uFE0F/g, "")]) return;
     var row = rows.filter(function (r) { return r.content === name; })[0];
     var custom = /^:[^:\s]+:$/.test(name);
     var mine = !!me && rows.some(function (r) { return r.content === name && r.userId === me; });
