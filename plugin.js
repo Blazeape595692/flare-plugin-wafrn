@@ -96,6 +96,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
             state: requiredString(request.state, "OAuth state is missing"),
           }),
           pendingPayload: {
+            state: String(request.state),
             clientId: String(app.client_id),
             clientSecret: String(app.client_secret),
             composeConfig: composeConfig(instance),
@@ -108,6 +109,10 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         var pending = request.pendingPayload || {};
         var callback = request.callbackParameters || {};
         if (callback.error) validationError("Wafrn denied the authorization request");
+        // Only finish the sign-in this flow started.
+        if (pending.state && callback.state !== undefined && String(callback.state) !== String(pending.state)) {
+          validationError("This sign-in link doesn't match the one Flare opened; start the sign-in again");
+        }
         var code = requiredString(callback.code, "OAuth callback code is missing");
         var token = (
           await apiRequest(origin, "/oauth/token", {
@@ -1337,9 +1342,15 @@ async function authed(context, path, options) {
 
 async function apiRequest(origin, path, options) {
   var opts = options || {};
+  var base = requireOrigin(origin);
+  if (/^https:\/\//i.test(path) && path.toLowerCase().indexOf(base.toLowerCase() + "/") !== 0 && opts.token) {
+    // Never send a sign-in token anywhere but this account's own server.
+    invalidResponse("Refused to send your sign-in to another server");
+  }
+  if (!/^https:\/\//i.test(path) && path.charAt(0) !== "/") invalidResponse("Invalid Wafrn request");
   var request = {
     method: opts.method || "GET",
-    url: /^https:\/\//i.test(path) ? path : requireOrigin(origin) + path,
+    url: /^https:\/\//i.test(path) ? path : base + path,
     headers: { Accept: "application/json" },
   };
   if (opts.token) request.authorization = { type: "bearer", token: opts.token };
