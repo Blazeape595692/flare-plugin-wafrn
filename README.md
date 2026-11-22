@@ -28,6 +28,9 @@ Flare has no emoji picker for plugins, so:
 
 - A post shows the reactions it already has. Tap one to add the same reaction; tap
   again to remove it.
+- Likes appear as a ❤️ reaction with the like count (Wafrn counts heart reactions as
+  likes), not as a number beside the like button. Tapping the ❤️, or replying with only
+  ❤️, likes the post; this works with either sign-in.
 - To react with any other emoji, **reply with only that emoji** (e.g. `🎉`) or only a
   custom emoji code (e.g. `:blobcat:`). That adds a reaction instead of posting a reply.
   Anything longer is a normal reply.

@@ -291,6 +291,10 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         }
         if (request.action === "React" || request.action === "Unreact") {
           var reaction = String((request.parameters && request.parameters.reaction) || "");
+          if (isLikeHeart(reaction)) {
+            // The ❤️ chip is the like count: tapping it likes or unlikes (either sign-in).
+            return likePost(context, request.key.id, request.action === "React");
+          }
           await sendReaction(context, request.key.id, reaction, request.action === "Unreact");
           return { type: "updatedPost", post: await refreshedPost(context, request.key.id) };
         }
@@ -387,6 +391,10 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         // Replying with only one emoji or :shortcode: reacts instead (Flare has no emoji picker).
         var reactWith = request.replyTo && !(request.assets || []).length && !request.spoilerText
           ? await reactionFromText(context, request.text) : null;
+        if (reactWith && isLikeHeart(reactWith)) {
+          await likePost(context, request.replyTo.id, true);
+          return { post: await refreshedPost(context, request.replyTo.id) };
+        }
         if (reactWith) {
           await sendReaction(context, request.replyTo.id, reactWith, false);
           return { post: await refreshedPost(context, request.replyTo.id) };
@@ -619,7 +627,7 @@ async function enrichItems(items, context) {
       t.post.content = { format: "html", value: emojify(t.post.content.value, inline) };
     }
     var reactions = buildReactions(data, t.uuid, me, !!jwt, context.origin, local);
-    if (reactions.length) t.post.emojiReactions = reactions;
+    if (reactions.length) t.post.emojiReactions = (t.post.emojiReactions || []).concat(reactions).slice(0, 100);
     var quotes = quotedPosts(data, t.uuid, context);
     if (quotes.length) {
       t.item.presentation = t.item.presentation || {};
@@ -629,6 +637,11 @@ async function enrichItems(items, context) {
 }
 
 var LIKE_HEARTS = { "\u2764": true, "\u2665": true }; // ❤ ♥, with or without the emoji marker
+var LIKE_CHIP = "\u2764\uFE0F";
+
+function isLikeHeart(name) {
+  return !!LIKE_HEARTS[String(name || "").trim().replace(/\uFE0F/g, "")];
+}
 
 function buildReactions(data, uuid, me, canReact, origin, local) {
   var relations = data.emojiRelations || {};
@@ -648,7 +661,7 @@ function buildReactions(data, uuid, me, canReact, origin, local) {
     var name = String(c.content);
     if (seen[name] || name.length > 512) return;
     // Wafrn counts a heart reaction as a like, which the like button already shows.
-    if (LIKE_HEARTS[name.replace(/\uFE0F/g, "")]) return;
+    if (isLikeHeart(name)) return;
     var row = rows.filter(function (r) { return r.content === name; })[0];
     var custom = /^:[^:\s]+:$/.test(name);
     var mine = !!me && rows.some(function (r) { return r.content === name && r.userId === me; });
@@ -939,6 +952,12 @@ async function oncePerSecond(origin, path, options) {
   }
 }
 
+async function likePost(context, postKey, like) {
+  var path = "/api/v1/statuses/" + encodeURIComponent(postKey);
+  await authed(context, path + (like ? "/favourite" : "/unfavourite"), { method: "POST" });
+  return { type: "updatedPost", post: await refreshedPost(context, postKey) };
+}
+
 async function sendReaction(context, postKey, emojiName, undo) {
   var cred = (await flare.credential.read()) || {};
   if (!cred.jwt) unsupportedError("Reactions need the \"Sign in with email and password\" option; add the account again that way");
@@ -964,6 +983,7 @@ async function refreshedPost(context, postKey) {
 async function reactionFromText(context, text) {
   var value = String(text || "").trim();
   if (!value || value.length > 64) return null;
+  if (isLikeHeart(value)) return LIKE_CHIP; // a like; works with either sign-in
   var cred = (await flare.credential.read()) || {};
   if (!cred.jwt) return null;
   var shortcode = value.match(/^:([A-Za-z0-9_+-]+):$/);
@@ -1062,12 +1082,17 @@ function mapPost(status, context) {
     media: mapMediaList(status.media_attachments, origin),
     sensitive: status.sensitive === true,
     visibility: fromWafrnVisibility(status.visibility),
-    favouritesCount: count(status.favourites_count),
     repostsCount: count(status.reblogs_count),
     repliesCount: count(status.replies_count),
   };
   if (status.account) post.author = mapProfile(status.account, origin);
-  if (!status.reblog) post.actions = postActions(status, context);
+  if (!status.reblog) {
+    post.actions = postActions(status, context);
+    // Likes are shown as a ❤️ reaction with the like count (tapping it likes/unlikes),
+    // instead of a count beside the like button.
+    var likes = count(status.favourites_count);
+    if (likes) post.emojiReactions = [{ name: LIKE_CHIP, count: likes, isUnicode: true, me: status.favourited === true, enabled: true }];
+  }
   var url = safeHttpsUrl(status.url || status.uri, origin);
   if (url) post.url = url;
   if (status.in_reply_to_id != null) post.replyTo = { id: String(status.in_reply_to_id), host: host };
@@ -1084,7 +1109,7 @@ function postActions(status, context) {
   var actions = [
     { action: "Reply", count: count(status.replies_count) },
     { action: reblogged ? "Unrepost" : "Repost", active: reblogged, count: count(status.reblogs_count) },
-    { action: liked ? "Unfavourite" : "Favourite", active: liked, count: count(status.favourites_count) },
+    { action: liked ? "Unfavourite" : "Favourite", active: liked },
   ];
   if (isOwnPost(status, context)) actions.push({ action: "Delete" });
   return actions;
