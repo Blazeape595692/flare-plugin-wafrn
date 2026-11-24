@@ -26,6 +26,10 @@ posts, bookmarks, block/mute, polls and follower lists.
 
 Flare has no emoji picker for plugins, so:
 
+- Reactions and quoted posts appear when you open a post (feeds only show the ❤️ like
+  count). Wafrn allows about 40 browsing requests a minute, and looking these up for
+  every post in a feed used that up quickly. Lookups are kept for 5 minutes, and pause
+  when Wafrn asks the app to slow down.
 - A post shows the reactions it already has. Tap one to add the same reaction; tap
   again to remove it.
 - Likes appear as a ❤️ reaction with the like count (Wafrn counts heart reactions as

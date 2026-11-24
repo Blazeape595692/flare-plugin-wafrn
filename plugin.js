@@ -282,7 +282,10 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         values.push(detail);
         asArray(thread.descendants).forEach(function (s) { values.push(s); });
         var items = values.filter(Boolean).slice(0, 200).map(function (s) { return mapTimelineItem(s, context); });
-        await enrichItems(items, context);
+        var opened = items.filter(function (i) { return i && i.post && i.post.key.id === String(request.key.id); });
+        var others = items.filter(function (i) { return opened.indexOf(i) < 0; });
+        await enrichItems(opened, context);
+        await enrichItems(others, context, { lookup: false });
         return { items: items, endReached: true };
       },
       async delete(request, context) {
@@ -317,9 +320,10 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
         if (!status || String(status.id) !== request.key.id || status.reblog) {
           status = (await authed(context, path)).data;
         }
-        // An updated post replaces the cached one completely, so include its reactions.
+        // An updated post replaces the cached one completely, so keep its reactions if
+        // they're known (an opened post) without spending a request from a feed.
         var updated = { type: "post", post: mapPost(status, context) };
-        await enrichItems([updated], context);
+        await enrichItems([updated], context, { cachedOnly: true });
         return { type: "updatedPost", post: updated.post };
       },
     },
@@ -398,7 +402,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
           ? await reactionFromText(context, request.text) : null;
         if (reactWith && isLikeHeart(reactWith)) {
           await likePost(context, request.replyTo.id, true);
-          return { post: await refreshedPost(context, request.replyTo.id) };
+          return { post: await refreshedPost(context, request.replyTo.id, { keepCache: true }) };
         }
         if (reactWith) {
           await sendReaction(context, request.replyTo.id, reactWith, false);
@@ -445,7 +449,7 @@ defineFlareSocialPlugin(guardPlugin("the Wafrn server", withOpenLinks("Wafrn", {
           validationError("Wafrn queued the post; it will appear once published");
         }
         var created = { type: "post", post: mapPost(response.data, context) };
-        await enrichItems([created], context);
+        await enrichItems([created], context, { lookup: false }); // new: no reactions yet
         return { post: created.post };
       },
     },
@@ -556,7 +560,7 @@ async function statusPage(context, path, page, params, keep) {
     if (kept.length >= Math.min(limit, 10)) break;
   }
   var items = kept.map(function (s) { return mapTimelineItem(s, context); });
-  await enrichItems(items, context);
+  await enrichItems(items, context, { lookup: false });
   if (!last) return { items: items, endReached: true };
   return { items: items, olderCursor: cursor, endReached: false };
 }
@@ -590,7 +594,9 @@ function isBlueskyAccount(account) {
 // looked up once in Wafrn's own API (/api/v3/post/:uuid), in parallel. A failed
 // lookup only leaves that post without reactions/quotes.
 
-async function enrichItems(items, context) {
+async function enrichItems(items, context, options) {
+  var lookup = !(options && options.lookup === false);
+  var cachedOnly = !!(options && options.cachedOnly);
   var targets = [];
   items.forEach(function (item) {
     if (!item || item.type !== "post") return;
@@ -607,6 +613,9 @@ async function enrichItems(items, context) {
       if (t.post.actions) t.post.actions = t.post.actions.filter(function (a) { return a.action !== "Delete"; });
     });
   }
+  // Feeds skip the per-post lookups: Wafrn allows about 40 browsing requests a minute,
+  // so reactions and quoted posts are only fetched for a post you open.
+  if (!lookup) return;
   var me = decodeId(String(context.accountId || ""));
   // Fetch the emoji list and every post at once, each with a short limit, so a slow
   // server only drops the extras instead of the whole timeline.
@@ -616,8 +625,7 @@ async function enrichItems(items, context) {
   var lookups = {};
   targets.forEach(function (t) {
     if (!lookups[t.uuid]) {
-      lookups[t.uuid] = apiRequest(context.origin, "/api/v3/post/" + t.uuid, side)
-        .then(function (r) { return r.data; }, function () { return null; });
+      lookups[t.uuid] = postLookup(context, t.uuid, side, cachedOnly);
     }
   });
   var emojiList = await emojis;
@@ -646,6 +654,48 @@ var LIKE_CHIP = "\u2764\uFE0F";
 
 function isLikeHeart(name) {
   return !!LIKE_HEARTS[String(name || "").trim().replace(/\uFE0F/g, "")];
+}
+
+// Per-post lookups (reactions, quotes) are kept for a few minutes, so reopening a post or
+// refreshing doesn't spend Wafrn's request allowance again. When Wafrn says to slow down,
+// lookups stop until its waiting time is over; posts still show, just without extras.
+var POST_LOOKUP_TTL_MS = 5 * 60 * 1000;
+var POST_LOOKUP_MAX = 300;
+var postLookupCache = {}; // uuid -> { at, data }
+var lookupsPausedUntil = 0;
+
+function postLookup(context, uuid, side, cachedOnly) {
+  var key = context.origin + " " + uuid;
+  var hit = postLookupCache[key];
+  if (hit && Date.now() - hit.at < POST_LOOKUP_TTL_MS) return Promise.resolve(hit.data);
+  if (cachedOnly) return Promise.resolve(null);
+  if (Date.now() < lookupsPausedUntil) return Promise.resolve(hit ? hit.data : null);
+  return apiRequest(context.origin, "/api/v3/post/" + uuid, side).then(function (r) {
+    var data = r && r.data && typeof r.data === "object" ? r.data : null;
+    if (data) rememberLookup(key, data);
+    return data;
+  }, function (error) {
+    var info = error && error.__flarePluginErrorV1;
+    if (info && info.code === "RateLimited") {
+      var wait = Number(info.retryAfterSeconds);
+      lookupsPausedUntil = Date.now() + (Number.isFinite(wait) && wait > 0 ? Math.min(wait, 600) : 60) * 1000;
+    }
+    return hit ? hit.data : null;
+  });
+}
+
+function rememberLookup(key, data) {
+  postLookupCache[key] = { at: Date.now(), data: data };
+  var keys = Object.keys(postLookupCache);
+  if (keys.length > POST_LOOKUP_MAX) {
+    keys.sort(function (a, b) { return postLookupCache[a].at - postLookupCache[b].at; });
+    keys.slice(0, keys.length - POST_LOOKUP_MAX).forEach(function (k) { delete postLookupCache[k]; });
+  }
+}
+
+function forgetLookup(context, postKey) {
+  var uuid = decodeId(String(postKey));
+  if (uuid) delete postLookupCache[context.origin + " " + uuid];
 }
 
 function buildReactions(data, uuid, me, canReact, origin, local) {
@@ -960,7 +1010,7 @@ async function oncePerSecond(origin, path, options) {
 async function likePost(context, postKey, like) {
   var path = "/api/v1/statuses/" + encodeURIComponent(postKey);
   await authed(context, path + (like ? "/favourite" : "/unfavourite"), { method: "POST" });
-  return { type: "updatedPost", post: await refreshedPost(context, postKey) };
+  return { type: "updatedPost", post: await refreshedPost(context, postKey, { keepCache: true }) };
 }
 
 async function sendReaction(context, postKey, emojiName, undo) {
@@ -977,10 +1027,12 @@ async function sendReaction(context, postKey, emojiName, undo) {
   if (result.success !== true && !undo) validationError(remoteMessage(result, "Wafrn didn't accept this reaction"));
 }
 
-async function refreshedPost(context, postKey) {
+async function refreshedPost(context, postKey, options) {
+  var keep = !!(options && options.keepCache);
+  if (!keep) forgetLookup(context, postKey); // emoji reactions just changed
   var status = (await authed(context, "/api/v1/statuses/" + encodeURIComponent(postKey))).data;
   var item = { type: "post", post: mapPost(status, context) };
-  await enrichItems([item], context);
+  await enrichItems([item], context, keep ? { cachedOnly: true } : undefined);
   return item.post;
 }
 
